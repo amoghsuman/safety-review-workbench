@@ -1,0 +1,1 @@
+-- SQLite schema for AstroTalk content safety results store
