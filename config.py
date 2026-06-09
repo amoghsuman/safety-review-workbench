@@ -4,7 +4,8 @@ All tunable parameters, model names, thresholds, and paths live here.
 """
 
 from pathlib import Path
-
+from dotenv import load_dotenv
+load_dotenv()
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------

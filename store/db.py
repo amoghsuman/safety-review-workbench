@@ -19,6 +19,13 @@ def initialise_db() -> None:
     schema = _SCHEMA_PATH.read_text(encoding="utf-8")
     with get_connection() as conn:
         conn.executescript(schema)
+    # Safe migration: add session_note column to existing databases that
+    # pre-date the schema change.  ALTER TABLE fails silently if already present.
+    try:
+        with get_connection() as conn:
+            conn.execute("ALTER TABLE sessions ADD COLUMN session_note TEXT")
+    except Exception:
+        pass
     print(f"Database initialised at {DB_PATH}")
 
 

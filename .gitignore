@@ -8,7 +8,7 @@ data/raw/
 data/processed/
 data/ground_truth/
 data/samples/
-
+node_modules/
 # Environment variables
 .env
 

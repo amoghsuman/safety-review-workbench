@@ -1,0 +1,70 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #F5F4F0;
+  color: #1C1C1A;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  cursor: pointer;
+  font-family: 'DM Sans', sans-serif;
+}
+
+input,
+select,
+textarea {
+  font-family: 'DM Sans', sans-serif;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: #D4D0C9; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #B8B4AD; }
+
+/* Selection */
+::selection { background: #E1F5EE; }
+
+/* ── Keyframe animations ──────────────────────────────────────────── */
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(14px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+/* ── Hover utilities (inline styles can't do :hover) ─────────────── */
+
+.session-row:hover    { background: #FAFAF8 !important; }
+.btn-accent:hover     { background: #085041 !important; }
+.btn-link-accent:hover{ text-decoration: underline; }
+.btn-back-link:hover  { text-decoration: underline; }
+.btn-nav:hover:not(:disabled) { background: #FAFAF8 !important; }
+.review-btn:hover     { background: #085041 !important; }

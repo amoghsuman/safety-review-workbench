@@ -22,6 +22,8 @@ from pipeline.checkpoint import (
     load_checkpoint, save_checkpoint, clear_checkpoint, checkpoint_exists,
 )
 
+from dotenv import load_dotenv
+load_dotenv()
 # ---------------------------------------------------------------------------
 # Vocabulary translation: engine → store schema
 # ---------------------------------------------------------------------------

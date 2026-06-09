@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     reviewer_id         TEXT,
     reviewer_note       TEXT,
     reviewed_at         TEXT,
+    session_note        TEXT,
     created_at          TEXT    DEFAULT (datetime('now'))
 );
 
@@ -37,12 +38,12 @@ CREATE TABLE IF NOT EXISTS flags (
     session_id          TEXT,
     turn_id             INTEGER,
     category_code       TEXT,                               -- e.g. 'OFF_PLATFORM', 'NSFW', 'FEAR_MANIPULATION'
-    detection_layer     TEXT,                               -- 'REGEX' or 'LLM'
+    detection_layer     TEXT,                               -- 'REGEX', 'LLM', or 'MANUAL'
     severity            TEXT,                               -- 'LOW', 'MEDIUM', 'HIGH'
     confidence_score    REAL,
     reasoning           TEXT,
     false_positive_risk TEXT,                               -- 'LOW', 'MEDIUM', 'HIGH'
-    pattern_matched     TEXT,                               -- for regex layer: the pattern that triggered
+    pattern_matched     TEXT,                               -- for regex/manual layer: the pattern or message text
     created_at          TEXT    DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
@@ -51,7 +52,7 @@ CREATE TABLE IF NOT EXISTS review_log (
     log_id              INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id          TEXT,
     flag_id             INTEGER,
-    action              TEXT,                               -- 'CONFIRM', 'FALSE_POSITIVE', 'ESCALATE', 'CLEAR'
+    action              TEXT,                               -- 'CONFIRM', 'FALSE_POSITIVE', 'ESCALATE', 'CLEAR', 'MANUAL_FLAG'
     reviewer_id         TEXT,
     note                TEXT,
     actioned_at         TEXT    DEFAULT (datetime('now')),
