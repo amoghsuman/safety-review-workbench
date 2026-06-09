@@ -1,1 +1,308 @@
 """Orchestrates full batch run across the dataset"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import time
+from datetime import datetime
+from pathlib import Path
+
+from engine.data_loader          import DataLoader
+from engine.language_detector    import LanguageDetector   # noqa: F401 — used internally by LLMClassifier
+from engine.classifier           import LLMClassifier
+from engine.aggregator           import SessionAggregator
+from engine.consultant_analyser  import ConsultantAnalyser
+
+from store.db     import initialise_db, DB_PATH
+from store.writer import write_session_complete
+
+from pipeline.logger     import get_logger, log_session_result, log_batch_summary, log_error
+from pipeline.checkpoint import (
+    load_checkpoint, save_checkpoint, clear_checkpoint, checkpoint_exists,
+)
+
+# ---------------------------------------------------------------------------
+# Vocabulary translation: engine → store schema
+# ---------------------------------------------------------------------------
+
+# SessionResult.final_severity → sessions.overall_verdict
+_VERDICT_MAP: dict[str, str] = {
+    "Red":   "SEVERE",
+    "Amber": "FLAGGED",
+    "Green": "CLEAN",
+}
+
+# confidence string → numeric score stored in the DB
+_CONF_SCORE: dict[str, float] = {
+    "High":   0.9,
+    "Medium": 0.6,
+    "Low":    0.3,
+}
+
+# Engine severity strings (both Red/Amber and High/Medium/Low) → flags.severity
+_FLAG_SEV: dict[str, str] = {
+    "Red":    "HIGH",
+    "Amber":  "MEDIUM",
+    "High":   "HIGH",
+    "Medium": "MEDIUM",
+    "Low":    "LOW",
+}
+
+# Inverted confidence → false_positive_risk
+_FP_RISK: dict[str, str] = {
+    "High":   "LOW",
+    "Medium": "MEDIUM",
+    "Low":    "HIGH",
+}
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers — build store-compatible dicts from engine outputs
+# ---------------------------------------------------------------------------
+
+def _build_session_data(session: dict, result, classification) -> dict:
+    messages  = session.get("messages", [])
+    t_start   = messages[0].get("timestamp")  if messages else None
+    t_end     = messages[-1].get("timestamp") if messages else None
+    duration_m = None
+    if t_start and t_end:
+        try:
+            dt1 = datetime.fromisoformat(t_start.replace("Z", "+00:00"))
+            dt2 = datetime.fromisoformat(t_end.replace("Z",   "+00:00"))
+            duration_m = round(abs((dt2 - dt1).total_seconds()) / 60, 2)
+        except (ValueError, AttributeError):
+            pass
+
+    return {
+        "session_id":              str(session.get("order_id")),
+        "astrologer_id":           session.get("consultant_name", ""),
+        "user_id":                 session.get("user_name", ""),
+        "session_start":           t_start,
+        "session_end":             t_end,
+        "duration_minutes":        duration_m,
+        "session_type":            "chat",
+        "language_detected":       result.primary_language,
+        "overall_verdict":         _VERDICT_MAP.get(result.final_severity, "CLEAN"),
+        "confidence_score":        _CONF_SCORE.get(result.confidence_level, 0.3),
+        "astrotalk_flagged":       0 if session.get("category") == "False Positives" else 1,
+        "astrotalk_flag_category": session.get("category", ""),
+        "astrotalk_severity":      session.get("category", ""),
+    }
+
+
+def _build_turns(messages: list[dict]) -> list[dict]:
+    return [
+        {
+            "turn_id":           i + 1,
+            "speaker":           "ASTROLOGER" if m.get("role") == "CONSULTANT" else "USER",
+            "message_text":      m.get("message", ""),
+            "timestamp":         m.get("timestamp"),
+            "language_detected": None,
+        }
+        for i, m in enumerate(messages)
+    ]
+
+
+def _build_flags(classification, profile) -> list[dict]:
+    flags: list[dict] = []
+
+    # Layer 2 — LLM intent matches, one row per (chunk, intent) occurrence
+    for cr in classification.chunk_results:
+        for im in cr.intents_triggered:
+            flags.append({
+                "turn_id":             None,
+                "category_code":       im.intent_id,
+                "detection_layer":     "LLM",
+                "severity":            _FLAG_SEV.get(im.severity, "MEDIUM"),
+                "confidence_score":    _CONF_SCORE.get(im.confidence, 0.3),
+                "reasoning":           im.reason,
+                "false_positive_risk": _FP_RISK.get(im.confidence, "MEDIUM"),
+                "pattern_matched":     None,
+            })
+
+    # Layer 1 — rule-based flags from ConsultantAnalyser
+    for flag in profile.red_flags:
+        flags.append({
+            "turn_id":             None,
+            "category_code":       flag.flag_type,
+            "detection_layer":     "REGEX",
+            "severity":            _FLAG_SEV.get(flag.severity, "MEDIUM"),
+            "confidence_score":    _CONF_SCORE.get(flag.severity, 0.3),
+            "reasoning":           f"Consultant behaviour: {flag.flag_type}",
+            "false_positive_risk": _FP_RISK.get(flag.severity, "MEDIUM"),
+            "pattern_matched":     flag.flag_type,
+        })
+
+    return flags
+
+
+# ---------------------------------------------------------------------------
+# Public pipeline functions
+# ---------------------------------------------------------------------------
+
+def process_session(
+    session: dict,
+    logger,
+    *,
+    _analyser: ConsultantAnalyser | None = None,
+    _clf: LLMClassifier | None = None,
+    _aggregator: SessionAggregator | None = None,
+) -> dict | None:
+    """
+    Runs a single session through the full engine pipeline.
+    Returns a structured result dict or None on any failure.
+
+    The *_analyser, _clf, _aggregator keyword arguments are internal and
+    allow run_batch() to pass pre-constructed engine objects for reuse
+    across the batch.  When called standalone the function instantiates
+    its own engine objects.
+    """
+    session_id = str(session.get("order_id", "unknown"))
+    try:
+        analyser   = _analyser   or ConsultantAnalyser()
+        clf        = _clf        or LLMClassifier()
+        aggregator = _aggregator or SessionAggregator()
+
+        # Layer 1 — rule-based consultant behaviour analysis
+        profile = analyser.analyse(session)
+
+        # Layer 2 — LLM classification (also runs language detection + chunking internally)
+        classification = clf.classify_session(session)
+
+        # Verdict aggregation
+        result = aggregator.aggregate(
+            classification,
+            profile,
+            human_label=session.get("category"),
+        )
+
+        messages = session.get("messages", [])
+        return {
+            "session_id":   session_id,
+            "session_data": _build_session_data(session, result, classification),
+            "turns":        _build_turns(messages),
+            "flags":        _build_flags(classification, profile),
+        }
+
+    except Exception as exc:
+        log_error(logger, session_id, exc)
+        return None
+
+
+def run_batch(data_path: str, fresh_run: bool = False) -> None:
+    logger = get_logger(__name__)
+
+    initialise_db()
+
+    if fresh_run and checkpoint_exists():
+        confirm = input(
+            "WARNING: This will clear the checkpoint and reprocess all sessions. "
+            "Continue? [y/N]: "
+        ).strip().lower()
+        if confirm != "y":
+            logger.info("Fresh run cancelled by user.")
+            return
+        clear_checkpoint()
+        logger.info("Checkpoint cleared — fresh run in progress.")
+
+    loader   = DataLoader(data_path)
+    sessions = loader.load()
+
+    processed_ids = load_checkpoint()
+    pending       = [s for s in sessions if str(s.get("order_id")) not in processed_ids]
+    logger.info(
+        "Sessions: total=%d  already_done=%d  to_process=%d",
+        len(sessions), len(processed_ids), len(pending),
+    )
+
+    # Instantiate engine objects once — avoids repeated API key checks and
+    # handler setup on LLMClassifier for each session.
+    analyser   = ConsultantAnalyser()
+    clf        = LLMClassifier()
+    aggregator = SessionAggregator()
+
+    counts = {"CLEAN": 0, "FLAGGED": 0, "SEVERE": 0, "error": 0}
+    batch_start     = time.time()
+    processed_count = 0
+
+    try:
+        for session in pending:
+            session_id = str(session.get("order_id", ""))
+            t_start    = time.time()
+
+            result = process_session(
+                session, logger,
+                _analyser=analyser, _clf=clf, _aggregator=aggregator,
+            )
+
+            if result is not None:
+                write_session_complete(
+                    result["session_id"],
+                    result["session_data"],
+                    result["turns"],
+                    result["flags"],
+                )
+                verdict = result["session_data"]["overall_verdict"]
+                counts[verdict] = counts.get(verdict, 0) + 1
+                log_session_result(
+                    logger, session_id, verdict,
+                    len(result["flags"]), time.time() - t_start,
+                )
+            else:
+                counts["error"] += 1
+
+            processed_ids.add(session_id)
+            processed_count += 1
+
+            if processed_count % 50 == 0:
+                save_checkpoint(processed_ids)
+
+    except KeyboardInterrupt:
+        logger.info("Run interrupted — saving checkpoint before exit.")
+        save_checkpoint(processed_ids)
+        return
+
+    save_checkpoint(processed_ids)
+
+    log_batch_summary(
+        logger,
+        total=processed_count,
+        clean=counts.get("CLEAN", 0),
+        flagged=counts.get("FLAGGED", 0),
+        severe=counts.get("SEVERE", 0),
+        errors=counts.get("error", 0),
+        elapsed_minutes=(time.time() - batch_start) / 60,
+    )
+
+
+def main() -> None:
+    print("=" * 60)
+    print("  AstroTalk Content Safety — Batch Pipeline Starting")
+    print("=" * 60)
+
+    parser = argparse.ArgumentParser(
+        description="AstroTalk Content Safety — Batch Pipeline",
+    )
+    parser.add_argument(
+        "--data",
+        required=True,
+        metavar="FILE",
+        help="Path to the input Excel data file (.xlsx)",
+    )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Ignore checkpoint and reprocess all sessions from scratch",
+    )
+    args = parser.parse_args()
+
+    run_batch(args.data, fresh_run=args.fresh)
+
+    print("=" * 60)
+    print(f"  Batch run complete. Results written to {DB_PATH}")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

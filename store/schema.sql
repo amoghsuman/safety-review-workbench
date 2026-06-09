@@ -1,1 +1,66 @@
 -- SQLite schema for AstroTalk content safety results store
+
+CREATE TABLE IF NOT EXISTS sessions (
+    session_id          TEXT    PRIMARY KEY,
+    astrologer_id       TEXT,
+    user_id             TEXT,
+    session_start       TEXT,
+    session_end         TEXT,
+    duration_minutes    REAL,
+    session_type        TEXT,                               -- 'chat' or 'voice'
+    language_detected   TEXT,
+    overall_verdict     TEXT,                               -- 'CLEAN', 'FLAGGED', 'SEVERE'
+    confidence_score    REAL,
+    astrotalk_flagged   INTEGER,                            -- 0 or 1
+    astrotalk_flag_category TEXT,
+    astrotalk_severity  TEXT,
+    review_status       TEXT    DEFAULT 'PENDING',          -- 'PENDING', 'REVIEWED', 'CONFIRMED', 'OVERRIDDEN', 'ESCALATED'
+    reviewer_id         TEXT,
+    reviewer_note       TEXT,
+    reviewed_at         TEXT,
+    created_at          TEXT    DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS turns (
+    turn_id             INTEGER,
+    session_id          TEXT,
+    speaker             TEXT,                               -- 'ASTROLOGER' or 'USER'
+    message_text        TEXT,
+    timestamp           TEXT,
+    language_detected   TEXT,
+    PRIMARY KEY (session_id, turn_id),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+CREATE TABLE IF NOT EXISTS flags (
+    flag_id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT,
+    turn_id             INTEGER,
+    category_code       TEXT,                               -- e.g. 'OFF_PLATFORM', 'NSFW', 'FEAR_MANIPULATION'
+    detection_layer     TEXT,                               -- 'REGEX' or 'LLM'
+    severity            TEXT,                               -- 'LOW', 'MEDIUM', 'HIGH'
+    confidence_score    REAL,
+    reasoning           TEXT,
+    false_positive_risk TEXT,                               -- 'LOW', 'MEDIUM', 'HIGH'
+    pattern_matched     TEXT,                               -- for regex layer: the pattern that triggered
+    created_at          TEXT    DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+CREATE TABLE IF NOT EXISTS review_log (
+    log_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id          TEXT,
+    flag_id             INTEGER,
+    action              TEXT,                               -- 'CONFIRM', 'FALSE_POSITIVE', 'ESCALATE', 'CLEAR'
+    reviewer_id         TEXT,
+    note                TEXT,
+    actioned_at         TEXT    DEFAULT (datetime('now')),
+    FOREIGN KEY (session_id) REFERENCES sessions(session_id)
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_sessions_verdict        ON sessions(overall_verdict);
+CREATE INDEX IF NOT EXISTS idx_sessions_review_status  ON sessions(review_status);
+CREATE INDEX IF NOT EXISTS idx_sessions_language       ON sessions(language_detected);
+CREATE INDEX IF NOT EXISTS idx_flags_session_id        ON flags(session_id);
+CREATE INDEX IF NOT EXISTS idx_flags_category_code     ON flags(category_code);
