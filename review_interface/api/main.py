@@ -91,6 +91,18 @@ class SessionNoteRequest(BaseModel):
     reviewer_id: str
 
 
+class AmendFlagRequest(BaseModel):
+    category_code: str
+    severity: str
+    reasoning: str
+    reviewer_id: str
+
+
+class DismissFlagRequest(BaseModel):
+    reviewer_id: str
+    note: str
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — health + aggregate stats
 # ---------------------------------------------------------------------------
@@ -357,6 +369,87 @@ def save_session_note(session_id: str, body: SessionNoteRequest):
         return {"success": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — flag operations
+# ---------------------------------------------------------------------------
+
+@app.post("/flags/{flag_id}/amend")
+def amend_flag(flag_id: int, body: AmendFlagRequest):
+    conn = get_connection()
+    try:
+        with conn:
+            original = conn.execute(
+                "SELECT session_id, turn_id FROM flags WHERE flag_id = ?", (flag_id,)
+            ).fetchone()
+            if original is None:
+                raise HTTPException(status_code=404, detail=f"Flag {flag_id} not found")
+            cur = conn.execute(
+                """
+                INSERT INTO flags
+                    (session_id, turn_id, category_code, detection_layer, severity,
+                     confidence_score, reasoning, false_positive_risk, pattern_matched)
+                VALUES (?, ?, ?, 'AMENDED', ?, 1.0, ?, 'LOW', ?)
+                """,
+                (
+                    original["session_id"],
+                    original["turn_id"],
+                    body.category_code,
+                    body.severity,
+                    body.reasoning,
+                    f"Amended by reviewer: {body.reviewer_id}",
+                ),
+            )
+        return {"success": True, "new_flag_id": cur.lastrowid}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.post("/flags/{flag_id}/dismiss")
+def dismiss_flag(flag_id: int, body: DismissFlagRequest):
+    conn = get_connection()
+    try:
+        with conn:
+            original = conn.execute(
+                "SELECT session_id, turn_id, category_code FROM flags WHERE flag_id = ?",
+                (flag_id,),
+            ).fetchone()
+            if original is None:
+                raise HTTPException(status_code=404, detail=f"Flag {flag_id} not found")
+            conn.execute(
+                """
+                INSERT INTO flags
+                    (session_id, turn_id, category_code, detection_layer, severity,
+                     confidence_score, reasoning, false_positive_risk, pattern_matched)
+                VALUES (?, ?, ?, 'DISMISSED', 'LOW', 0.0, ?, 'HIGH', ?)
+                """,
+                (
+                    original["session_id"],
+                    original["turn_id"],
+                    original["category_code"] + "_DISMISSED",
+                    f"Dismissed by reviewer: {body.note}",
+                    f"Dismissed by reviewer: {body.reviewer_id}",
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO review_log (session_id, flag_id, action, reviewer_id, note)
+                VALUES (?, ?, 'FLAG_DISMISSED', ?, ?)
+                """,
+                (original["session_id"], flag_id, body.reviewer_id, body.note),
+            )
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

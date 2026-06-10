@@ -8,6 +8,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_end         TEXT,
     duration_minutes    REAL,
     session_type        TEXT,                               -- 'chat' or 'voice'
+    session_date        TEXT,
+    month               TEXT,
+    language_code       TEXT,
     language_detected   TEXT,
     overall_verdict     TEXT,                               -- 'CLEAN', 'FLAGGED', 'SEVERE'
     confidence_score    REAL,
@@ -27,6 +30,7 @@ CREATE TABLE IF NOT EXISTS turns (
     session_id          TEXT,
     speaker             TEXT,                               -- 'ASTROLOGER' or 'USER'
     message_text        TEXT,
+    is_automated        INTEGER DEFAULT 0,
     timestamp           TEXT,
     language_detected   TEXT,
     PRIMARY KEY (session_id, turn_id),

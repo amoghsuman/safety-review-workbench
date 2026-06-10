@@ -3,6 +3,8 @@
 import os
 import sqlite3
 from pathlib import Path
+from dotenv import load_dotenv
+load_dotenv()
 
 DB_PATH = os.getenv("DB_PATH", "store/results.db")
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
@@ -19,13 +21,23 @@ def initialise_db() -> None:
     schema = _SCHEMA_PATH.read_text(encoding="utf-8")
     with get_connection() as conn:
         conn.executescript(schema)
-    # Safe migration: add session_note column to existing databases that
-    # pre-date the schema change.  ALTER TABLE fails silently if already present.
-    try:
-        with get_connection() as conn:
-            conn.execute("ALTER TABLE sessions ADD COLUMN session_note TEXT")
-    except Exception:
-        pass
+
+    migrations = [
+        "ALTER TABLE sessions ADD COLUMN session_note TEXT",
+        "ALTER TABLE turns ADD COLUMN is_automated INTEGER DEFAULT 0",
+        "ALTER TABLE sessions ADD COLUMN session_date TEXT",
+        "ALTER TABLE sessions ADD COLUMN month TEXT",
+        "ALTER TABLE sessions ADD COLUMN language_code TEXT",
+    ]
+
+    with get_connection() as conn:
+        for migration in migrations:
+            try:
+                conn.execute(migration)
+                conn.commit()
+            except Exception:
+                pass  # Column already exists, safe to ignore
+
     print(f"Database initialised at {DB_PATH}")
 
 

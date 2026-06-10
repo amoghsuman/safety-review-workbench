@@ -1,599 +1,326 @@
 """
 data_loader.py
-Loads the AstroTalk NSFW case Excel file and normalises both sheets into
-Python objects.
+Loads AstroTalk CSV data (one row per message) and reconstructs
+session objects for the classification pipeline.
 
-Sheet 1  — "Classification"  -> session metadata (50 rows)
-Sheet 2  — "Chat Messages"   -> full message history (≈5 800 rows)
+Accepts either a single CSV file path or a folder of CSV files.
+All .csv files in a folder are concatenated and processed as one dataset.
 
-The two sheets are linked via order_id / chat_order_id.
+Usage
+-----
+    loader   = DataLoader('data/raw/astrotalk_data.csv')
+    loader   = DataLoader('data/raw/')
+    sessions = loader.load_sessions()   # -> list[dict]
 """
 
 from __future__ import annotations
 
-import json
-import re
 import sys
-from collections import Counter, defaultdict
-from datetime import datetime, timezone
+import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-import openpyxl
+import pandas as pd
 
 # Allow running this file directly (python engine/data_loader.py)
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from config import DATA_PROCESSED_DIR, EXCEL_FILE
 
 # ---------------------------------------------------------------------------
-# Column indices — zero-based, matching the actual sheet layout
+# Speaker normalisation
 # ---------------------------------------------------------------------------
-# Classification: Case category | Date | order_id (formula) | chat_link |
-#                 AI Reason For Flagging | Feedbacks | Action
-_C_CATEGORY    = 0
-_C_DATE        = 1
-_C_ORDER_ID    = 2   # cell contains a REGEXEXTRACT formula; fallback is the real id
-_C_CHAT_LINK   = 3
-_C_AI_REASON   = 4
-_C_FEEDBACK    = 5
-_C_ACTION      = 6
-
-# Chat Messages: id | timestamp_ist | chat_order_id | role | message | (extra)
-_M_ID          = 0
-_M_TIMESTAMP   = 1
-_M_ORDER_ID    = 2
-_M_ROLE        = 3
-_M_MESSAGE     = 4
-
-# Regex to pull the hardcoded fallback integer out of the IFERROR formula,
-# e.g.  =IFERROR(__xludf.DUMMYFUNCTION("REGEXEXTRACT(D2,…)"),"316068745")
-_ORDER_ID_RE = re.compile(r'"(\d+)"\s*\)?\s*$')
-
-# HTML tag stripper — removes <br>, <b>, </b> etc.
-_HTML_TAG_RE = re.compile(r'<[^>]+>')
-
-# ---------------------------------------------------------------------------
-# Third-party name extraction — constants
-# ---------------------------------------------------------------------------
-
-# Consultant title prefixes that appear before the name in "Hi Tarot Rithvika,"
-_CONSULTANT_TITLE_PREFIXES = {
-    "Tarot", "Psychic", "Astro", "Dr", "Pt", "Pandit", "Guruji",
+_SPEAKER_MAP = {
+    "consultant": "ASTROLOGER",
+    "user":       "USER",
 }
-
-# Words that look capitalised but are NOT person names
-_NAME_STOPWORDS: set[str] = {
-    # Template / system words
-    "Hi", "Hello", "Dear", "This", "Below", "Name", "Gender", "Male", "Female",
-    "DOB", "TOB", "POB", "IST", "AM", "PM", "UTC",
-    "User", "USER", "Consultant", "Chat", "Astrotalk",
-    # Salutations
-    "Sir", "Madam", "Mam", "Bhai", "Didi", "Ji", "Bro", "Sis",
-    # Greetings
-    "Pranam", "Namaste", "Jai", "Radhe", "Shree", "Shri",
-    # Religious / mythological (not person names in this context)
-    "God", "Lord", "Bhagwan", "Allah", "Dev", "Devi", "Mata",
-    "Shiva", "Krishna", "Ram", "Rama", "Hanuman", "Ganesh",
-    "Durga", "Lakshmi", "Saraswati", "Vishnu", "Parshuram",
-    # Months
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
-    # Days
-    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday",
-    # Countries / regions
-    "India", "Pakistan", "Bangladesh", "Nepal", "Iran", "Singapore",
-    "United", "States", "America", "England", "Canada", "Australia",
-    "Europe", "Africa", "Asia", "UAE", "USA", "UK",
-    # Major world cities (diaspora + dream-destination references)
-    "London", "Dubai", "Paris", "Berlin", "Sydney", "Toronto",
-    "Houston", "Boston", "Chicago", "Oxford", "Cambridge", "Budapest",
-    "Woking", "Elmhurst", "York", "New",
-    # Indian states
-    "Uttar", "Pradesh", "Gujarat", "Bihar", "Rajasthan", "Punjab",
-    "Madhya", "Haryana", "Maharashtra", "Karnataka", "Kerala",
-    "Andhra", "Telangana", "Assam", "Odisha", "Jharkhand",
-    "Uttarakhand", "Himachal", "Chhattisgarh", "Goa", "Tamil", "Nadu",
-    "Bengal", "West",
-    # Major Indian cities / districts
-    "Delhi", "Mumbai", "Lucknow", "Saharanpur", "Sarangpur", "Ahmedabad",
-    "Jaipur", "Surat", "Agra", "Noida", "Gurgaon", "Chandigarh", "Bhopal",
-    "Indore", "Nagpur", "Patna", "Varanasi", "Allahabad", "Dehradun",
-    "Chennai", "Kolkata", "Bangalore", "Hyderabad", "Pune",
-    "Ludhiana", "Raipur", "Jalandhar", "Nashik", "Dhanbad",
-    "Silchar", "Rourkela", "Kumta", "Cachar", "Kangra",
-    "Mangalore", "Coimbatore",
-    # Titles and honorifics
-    "Mr", "Mrs", "Ms", "Miss", "Prof", "Rev",
-    # Hinglish salutations / social words
-    "Baba", "Guru", "Munda",
-    # Astrological / consultation vocabulary
-    "Kundali", "Rashi", "Nakshatra", "Lagna", "Ascendant", "Transit",
-    "Horoscope", "Janam", "Patri", "Dasha", "Mahadasha",
-    # Sexual / body words that sometimes appear Title-Cased in transcribed chat
-    "Sexy", "Boobs", "Dick", "Cock", "Pussy", "Ass", "Nude",
-    "Naked", "Wet",
-    # Additional geographic noise — Middle East, South Asia, international cities
-    "Shiraz", "Fars", "Tehran", "Iran", "Iraq",
-    "Dubai", "Sharjah", "Riyadh",
-    "Karachi", "Lahore", "Dhaka", "Colombo", "Kathmandu",
-    "Chedle", "Surrey",
-    # Misc capitalised words that appear in chat
-    "Yes", "No", "Okay", "Ok", "Thanks", "Thank", "Please", "Sorry",
-    "Kya", "Aap", "Haan", "Nahi", "Yaar", "Bete",
-    # Single-letter initials that sneak through (though regex filters these)
-}
-
-# Capitalised word pattern — Title-cased words of 3+ chars
-_CAPS_WORD_RE = re.compile(r'\b([A-Z][a-z]{2,})\b')
-
-# Common English words that can appear Title-Cased mid-sentence
-_COMMON_ENGLISH: set[str] = {
-    "The", "And", "But", "For", "Not", "Are", "Was", "Has", "Had", "Its",
-    "One", "Two", "All", "Can", "Our", "Out", "Get", "Got", "Him", "Her",
-    "His", "She", "They", "You", "Your", "Their", "That", "With", "From",
-    "Just", "Like", "Also", "More", "Some", "Have", "Been", "Will", "When",
-    "What", "Where", "How", "Who", "Why", "Which", "Then", "Than", "Into",
-    "Over", "After", "About", "Again", "Always", "Already", "Around",
-    "Because", "Between", "During", "Before", "Without",
-    # Common verbs Title-Cased in Hinglish sentences
-    "Stop", "Come", "Take", "Call", "Tell", "Know", "Want", "Need", "Give",
-    "See", "Look", "Talk", "Work", "Make", "Going", "Come", "Back", "Keep",
-    # Common adjectives / adverbs
-    "True", "Good", "Nice", "Same", "Real", "Very", "Much", "Only", "Even",
-    "Last", "Next", "Both", "Most", "Many", "Long", "Sure", "Late", "Early",
-    "Happy", "Best", "High", "Full", "Free", "Hot", "Big", "Small", "Little",
-    # Common Hinglish words that capitalise in transcribed chat
-    "Aaj", "Aap", "Aur", "Bhi", "Dnt", "Han", "Hain", "Hein", "Hun",
-    "Kal", "Kiya", "Koi", "Main", "Mera", "Meri", "Nahi", "Nah",
-    "Raha", "Rahi", "Sahi", "Toh", "Woh", "Yaar",
-    # Hinglish words that look like names but are not
-    "Dan",    # Hinglish particle ("Dan se" = "then/from that point")
-    "Janna",  # Hinglish verb ("Janna hai" = "need to know")
-    "Batao", "Payegi", "Abhi", "Hota", "Karne", "Aisa",
-    "Theek", "Zindagi", "Zyada", "Evening",
-    # Typos / garbled words that slip through
-    "Incan",    # garbled word, "as max Incan"
-    "Harding",  # typo of "harming" ("I'm Harding myself")
-    "Dard", "Laal", "Dena", "Daga", "Kant", "Kohi", "Called", "Tommorow",
-}
-
-
-def _is_common_english(word: str) -> bool:
-    """Return True if the word is a known common English / Hinglish non-name."""
-    return word in _COMMON_ENGLISH
-
-
-def _strip_html(text: str) -> str:
-    """Remove HTML tags and normalise whitespace."""
-    if not text:
-        return ""
-    return _HTML_TAG_RE.sub(" ", text).strip()
-
-
-def _extract_order_id(cell_value: Any) -> int | None:
-    """
-    The order_id column holds either:
-      • A cached evaluated value — plain string/int like '316068745' or 316068745.0
-        (when openpyxl data_only=True and the workbook has cached calc results)
-      • A raw IFERROR/REGEXEXTRACT formula string — the fallback integer is
-        embedded in double-quotes at the end of the formula.
-
-    We handle both forms.
-    """
-    if cell_value is None:
-        return None
-    # Already a number (int or float)
-    if isinstance(cell_value, (int, float)):
-        return int(cell_value)
-    text = str(cell_value).strip()
-    # Plain numeric string — the cached evaluated result
-    if text.isdigit():
-        return int(text)
-    # Formula fallback: ="…","316068745")
-    m = _ORDER_ID_RE.search(text)
-    return int(m.group(1)) if m else None
-
-
-# ---------------------------------------------------------------------------
-# Public data classes (plain dicts — lightweight, JSON-serialisable)
-# ---------------------------------------------------------------------------
-# Session schema
-# {
-#   "order_id":       int,
-#   "date":           str,
-#   "category":       str,
-#   "ai_reason":      str,
-#   "human_feedback": str,
-#   "action":         str,
-#   "chat_link":      str,
-#   "messages":       [ MessageDict, … ]
-# }
-
-# Message schema
-# {
-#   "message_id": int,
-#   "timestamp":  str,
-#   "role":       str,   # "USER" | "CONSULTANT"
-#   "message":    str
-# }
 
 
 class DataLoader:
     """
-    Reads NSFW_Cases_Categorization.xlsx and exposes clean session objects.
+    Reads AstroTalk CSV exports (one row per message) and exposes
+    clean session dicts for the classification pipeline.
 
-    Usage
-    -----
-    loader = DataLoader()           # uses EXCEL_FILE from config.py
-    sessions = loader.load()        # triggers parsing + prints summary
-    s = loader.get_session(316068745)
-    loader.save_processed()
+    Initialise with a file path or folder path:
+        loader = DataLoader('data/raw/astrotalk_data.csv')
+        loader = DataLoader('data/raw/')
+
+    Public interface:
+        sessions = loader.load_sessions()  -> list[dict]
     """
 
-    VALID_CATEGORIES = {"Explicit", "Borderline", "Moderate", "False Positives"}
-
-    def __init__(self, file_path: Path | str | None = None) -> None:
-        self.file_path: Path = Path(file_path) if file_path else EXCEL_FILE
-        self._sessions: dict[int, dict[str, Any]] = {}   # order_id -> session
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        self._sessions: list[dict[str, Any]] = []
         self._loaded = False
-        self.dedup_stats: dict[int, int] = {}             # order_id -> removed count
+        self._duplicates_removed = 0
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def load(self) -> list[dict[str, Any]]:
+    def load_sessions(self) -> list[dict[str, Any]]:
         """
-        Parse the Excel file, link sheets, print a summary, and return
-        all session objects sorted by date.
+        Load CSV(s), build session dicts, print a summary, and return
+        the session list. Keeps the same public interface as the previous
+        loader so batch_runner.py requires no changes.
         """
-        if not self.file_path.exists():
-            raise FileNotFoundError(
-                f"Excel file not found: {self.file_path}\n"
-                "Place NSFW_Cases_Categorization.xlsx in data/raw/ and retry."
-            )
-
-        wb = openpyxl.load_workbook(self.file_path, read_only=True, data_only=True)
-
-        metadata   = self._parse_classification(wb["Classification"])
-        messages   = self._parse_chat_messages(wb["Chat Messages"])
-
-        # Link messages into metadata and extract name fields
-        for order_id, meta in metadata.items():
-            meta["messages"] = messages.get(order_id, [])
-            user_name, consultant_name, third_party_names = self._extract_names(
-                meta["messages"]
-            )
-            meta["user_name"]          = user_name
-            meta["consultant_name"]    = consultant_name
-            meta["third_party_names"]  = third_party_names
-
-        self._sessions = metadata
-        self._loaded   = True
+        df = self._load_dataframe()
+        self._sessions = self._build_sessions(df)
+        self._loaded = True
         self._print_summary()
-        return self.get_all_sessions()
+        return self._sessions
 
-    def get_session(self, order_id: int) -> dict[str, Any]:
-        """Return a single session dict; raises KeyError if not found."""
-        self._require_loaded()
-        return self._sessions[order_id]
+    # ------------------------------------------------------------------
+    # Private — I/O
+    # ------------------------------------------------------------------
 
-    def get_all_sessions(self) -> list[dict[str, Any]]:
-        """Return all 50 session dicts, sorted by date ascending."""
-        self._require_loaded()
-        return sorted(self._sessions.values(), key=lambda s: s["date"])
-
-    def get_sessions_by_category(self, category: str) -> list[dict[str, Any]]:
+    def _load_dataframe(self) -> pd.DataFrame:
         """
-        Return sessions matching the given category label.
-        Valid values: 'Explicit', 'Borderline', 'Moderate', 'False Positives'.
+        Load one CSV or all .csv files in a folder into a single DataFrame.
+        Unreadable files are skipped with a warning; raises if nothing loads.
+        All columns are read as strings to avoid pandas type inference
+        silently mangling IDs or codes.
         """
-        self._require_loaded()
-        if category not in self.VALID_CATEGORIES:
-            raise ValueError(
-                f"Unknown category {category!r}. "
-                f"Valid options: {sorted(self.VALID_CATEGORIES)}"
+        if self.path.is_dir():
+            csv_files = sorted(self.path.glob("*.csv"))
+            if not csv_files:
+                raise FileNotFoundError(
+                    f"No .csv files found in directory: {self.path}"
+                )
+            frames: list[pd.DataFrame] = []
+            for f in csv_files:
+                try:
+                    frames.append(
+                        pd.read_csv(f, dtype=str, keep_default_na=False)
+                    )
+                    print(f"[DataLoader] Loaded: {f.name}")
+                except Exception as exc:
+                    warnings.warn(
+                        f"[DataLoader] Skipping {f.name} — could not read: {exc}"
+                    )
+            if not frames:
+                raise RuntimeError(
+                    f"All CSV files in {self.path} failed to load."
+                )
+            return pd.concat(frames, ignore_index=True)
+
+        if not self.path.exists():
+            raise FileNotFoundError(f"CSV file not found: {self.path}")
+        df = pd.read_csv(self.path, dtype=str, keep_default_na=False)
+        print(f"[DataLoader] Loaded: {self.path.name}")
+        return df
+
+    # ------------------------------------------------------------------
+    # Private — session construction
+    # ------------------------------------------------------------------
+
+    def _build_sessions(self, df: pd.DataFrame) -> list[dict[str, Any]]:
+        """
+        Group the flat message rows by session_id and build one
+        session dict per group. Returns a list sorted by session_start.
+        """
+        # Drop rows whose session_id is null or empty string
+        df = df[df["session_id"].str.strip().astype(bool)].copy()
+
+        sessions: list[dict[str, Any]] = []
+
+        for session_id, group in df.groupby("session_id", sort=False):
+            session_id = str(session_id).strip()
+
+            # Skip sessions that have nothing to classify
+            n_classifiable = (
+                group["is_automated_message"]
+                .apply(self._normalise_automated)
+                .eq(0)
+                .sum()
             )
-        return [s for s in self._sessions.values() if s["category"] == category]
-
-    def save_processed(self, output_name: str = "sessions.json") -> Path:
-        """Write parsed sessions to data/processed/<output_name>."""
-        self._require_loaded()
-        DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-        out = DATA_PROCESSED_DIR / output_name
-        with open(out, "w", encoding="utf-8") as fh:
-            json.dump(self.get_all_sessions(), fh, ensure_ascii=False, indent=2)
-        print(f"[DataLoader] Saved {len(self._sessions)} sessions -> {out}")
-        return out
-
-    # ------------------------------------------------------------------
-    # Private — sheet parsers
-    # ------------------------------------------------------------------
-
-    def _parse_classification(
-        self, ws: openpyxl.worksheet.worksheet.Worksheet
-    ) -> dict[int, dict[str, Any]]:
-        """
-        Parse the "Classification" sheet.
-        Skips the header row and any fully-empty trailing rows.
-        Returns a dict keyed by order_id.
-        """
-        metadata: dict[int, dict[str, Any]] = {}
-
-        for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
-            if row_idx == 0:
-                continue  # skip header
-
-            # Skip entirely empty rows (trailing blank rows in the sheet)
-            if all(v is None for v in row):
+            if n_classifiable == 0:
                 continue
 
-            order_id = _extract_order_id(row[_C_ORDER_ID])
-            if order_id is None:
-                continue  # can't link without an id
+            # Dedup exact-duplicate rows (export artefacts)
+            group, removed = self._dedup_messages(group)
+            self._duplicates_removed += removed
 
-            metadata[order_id] = {
-                "order_id":       order_id,
-                "date":           self._clean_str(row[_C_DATE]),
-                "category":       self._clean_str(row[_C_CATEGORY]),
-                "ai_reason":      self._clean_str(row[_C_AI_REASON]),
-                "human_feedback": self._clean_str(row[_C_FEEDBACK]),
-                "action":         self._clean_str(row[_C_ACTION]),
-                "chat_link":      self._clean_str(row[_C_CHAT_LINK]),
-                "messages":       [],   # filled in after _parse_chat_messages
-            }
-
-        return metadata
-
-    def _parse_chat_messages(
-        self, ws: openpyxl.worksheet.worksheet.Worksheet
-    ) -> dict[int, list[dict[str, Any]]]:
-        """
-        Parse the "Chat Messages" sheet, then deduplicate consecutive messages
-        within each session.
-
-        Returns a dict: chat_order_id -> [message_dict, …] (time-ordered,
-        duplicates removed).
-        """
-        messages: dict[int, list[dict[str, Any]]] = defaultdict(list)
-
-        for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
-            if row_idx == 0:
-                continue  # skip header
-            if all(v is None for v in row):
-                continue
-
-            order_id = int(row[_M_ORDER_ID]) if row[_M_ORDER_ID] else None
-            if order_id is None:
-                continue
-
-            msg: dict[str, Any] = {
-                "message_id": int(row[_M_ID]) if row[_M_ID] else None,
-                "timestamp":  self._clean_str(row[_M_TIMESTAMP]),
-                "role":       self._clean_str(row[_M_ROLE]).upper(),
-                "message":    _strip_html(self._clean_str(row[_M_MESSAGE])),
-            }
-            messages[order_id].append(msg)
-
-        # Deduplicate within each session and record stats
-        result: dict[int, list[dict[str, Any]]] = {}
-        for order_id, msgs in messages.items():
-            deduped, removed = self._dedup_messages(msgs)
-            result[order_id]            = deduped
-            self.dedup_stats[order_id]  = removed
-
-        return result
-
-    def _dedup_messages(
-        self, messages: list[dict[str, Any]]
-    ) -> tuple[list[dict[str, Any]], int]:
-        """
-        Remove consecutive duplicate messages from a session's message list.
-
-        Two messages are considered duplicates when ALL of:
-          - same role
-          - same message text (whitespace-normalised)
-          - timestamps within 5 seconds of each other
-
-        The first occurrence is kept; subsequent duplicates are dropped.
-        Returns (deduplicated_list, number_removed).
-        """
-        if not messages:
-            return messages, 0
-
-        kept: list[dict[str, Any]] = [messages[0]]
-        removed = 0
-
-        for current in messages[1:]:
-            prev = kept[-1]
-
-            if (
-                current["role"]    == prev["role"]
-                and current["message"].strip() == prev["message"].strip()
-                and self._within_seconds(current["timestamp"], prev["timestamp"], 5)
-            ):
-                removed += 1
+            # ── Timestamps ────────────────────────────────────────────
+            timestamps = group["sent_at_ist"].apply(self._parse_timestamp)
+            valid_ts   = [t for t in timestamps if t is not None]
+            session_start = min(valid_ts).isoformat() if valid_ts else None
+            session_end   = max(valid_ts).isoformat() if valid_ts else None
+            if len(valid_ts) >= 2:
+                delta    = (max(valid_ts) - min(valid_ts)).total_seconds() / 60
+                duration = round(delta, 1)
             else:
-                kept.append(current)
+                duration = 0.0
 
-        return kept, removed
+            # ── AstroTalk flag ─────────────────────────────────────────
+            astrotalk_flagged = (
+                1
+                if (group["flagged"].str.strip().str.lower() == "yes").any()
+                else 0
+            )
+
+            # ── Scalar session fields (first non-empty value in group) ─
+            def first_val(col: str) -> str | None:
+                if col not in group.columns:
+                    return None
+                nonempty = group[col].str.strip()
+                nonempty = nonempty[nonempty != ""]
+                return nonempty.iloc[0] if not nonempty.empty else None
+
+            # ── Turn list ──────────────────────────────────────────────
+            messages: list[dict[str, Any]] = []
+            for _, row in group.iterrows():
+                ts_val  = self._parse_timestamp(row.get("sent_at_ist", ""))
+                turn_id = self._parse_turn_id(
+                    row.get("message_seq", ""), len(messages) + 1
+                )
+                messages.append({
+                    "turn_id":      turn_id,
+                    "speaker":      self._normalise_speaker(
+                                        row.get("sender", "")
+                                    ),
+                    "message_text": str(row.get("message_text", "")).strip(),
+                    "is_automated": self._normalise_automated(
+                                        row.get("is_automated_message", 0)
+                                    ),
+                    "timestamp":    ts_val.isoformat() if ts_val else None,
+                })
+
+            sessions.append({
+                "session_id":              session_id,
+                "astrologer_id":           first_val("astrologer_id"),
+                "user_id":                 None,
+                "session_date":            first_val("session_date"),
+                "month":                   first_val("month"),
+                "language_code":           first_val("language"),
+                "session_type":            "chat",
+                "astrotalk_flagged":       astrotalk_flagged,
+                "astrotalk_flag_category": None,
+                "astrotalk_severity":      None,
+                "session_start":           session_start,
+                "session_end":             session_end,
+                "duration_minutes":        duration,
+                "messages":                messages,
+            })
+
+        # Sort by session_start ascending; sessions with no timestamp sort last
+        sessions.sort(key=lambda s: s["session_start"] or "")
+        return sessions
 
     @staticmethod
-    def _within_seconds(ts1: str, ts2: str, threshold: int) -> bool:
+    def _dedup_messages(
+        group: pd.DataFrame,
+    ) -> tuple[pd.DataFrame, int]:
         """
-        Return True if two ISO-8601 timestamp strings are within
-        *threshold* seconds of each other. Returns True on any parse
-        failure so that malformed timestamps never cause data loss.
+        Drop rows that are exact duplicates on (sender, message_text,
+        sent_at_ist). Handles repeated rows from multi-file export artefacts.
+        First occurrence is kept.
+        """
+        before = len(group)
+        group  = group.drop_duplicates(
+            subset=["sender", "message_text", "sent_at_ist"], keep="first"
+        )
+        return group, before - len(group)
+
+    # ------------------------------------------------------------------
+    # Private — field normalisation
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _normalise_speaker(sender: Any) -> str:
+        """'consultant' → 'ASTROLOGER', 'user' → 'USER', else 'UNKNOWN'."""
+        return _SPEAKER_MAP.get(str(sender).strip().lower(), "UNKNOWN")
+
+    @staticmethod
+    def _normalise_automated(val: Any) -> int:
+        """Safely coerce is_automated_message to 0 or 1."""
+        if isinstance(val, bool):
+            return int(val)
+        try:
+            return 1 if int(str(val).strip()) else 0
+        except (ValueError, TypeError):
+            return 0
+
+    @staticmethod
+    def _parse_timestamp(val: Any) -> datetime | None:
+        """
+        Try common IST datetime formats in order; fall back to pandas
+        inference for unusual formats. Returns None on any failure —
+        never raises.
+        """
+        raw = str(val).strip() if val is not None else ""
+        if not raw:
+            return None
+        for fmt in (
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+            "%d-%m-%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%d-%m-%Y %H:%M",
+        ):
+            try:
+                return datetime.strptime(raw, fmt)
+            except ValueError:
+                continue
+        try:
+            return pd.to_datetime(raw, dayfirst=False).to_pydatetime()
+        except Exception:
+            return None
+
+    @staticmethod
+    def _parse_turn_id(val: Any, fallback: int) -> int:
+        """
+        Parse message_seq as int. Returns fallback (sequential counter)
+        if val is absent or non-numeric, per spec requirement 7.
         """
         try:
-            t1 = datetime.fromisoformat(ts1.replace("Z", "+00:00"))
-            t2 = datetime.fromisoformat(ts2.replace("Z", "+00:00"))
-            return abs((t1 - t2).total_seconds()) <= threshold
-        except (ValueError, AttributeError):
-            return True
+            return int(str(val).strip())
+        except (ValueError, TypeError):
+            return fallback
 
     # ------------------------------------------------------------------
-    # Private — name extraction
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_names(
-        messages: list[dict[str, Any]],
-    ) -> tuple[str, str, list[str]]:
-        """
-        Derive three name fields from the session's message list.
-
-        Returns
-        -------
-        user_name        : str   — from "Name: X" in the first USER message,
-                                   or "" if redacted / absent
-        consultant_name  : str   — from "Hi [Name]," in the first USER message,
-                                   with title prefixes stripped
-        third_party_names: list  — capitalised proper nouns found in USER
-                                   messages that are neither the user's name,
-                                   the consultant's name, nor a known stopword /
-                                   place name.  Scans ALL USER messages so that
-                                   names introduced later (e.g. "what about
-                                   Priyanka?") are captured.
-        """
-        user_msgs = [m for m in messages if m["role"] == "USER"]
-        if not user_msgs:
-            return "", "", []
-
-        first_msg = user_msgs[0]["message"]
-
-        # ---- user_name -----------------------------------------------
-        user_name = ""
-        name_match = re.search(r'\bName\s*:\s*([^\s,\n]+)', first_msg)
-        if name_match:
-            candidate = name_match.group(1).strip()
-            # Skip the redaction placeholder "USER"
-            if candidate.upper() != "USER":
-                user_name = candidate
-
-        # ---- consultant_name -----------------------------------------
-        # Pattern: "Hi [Title?] FirstName[...],"
-        # e.g.  "Hi Baani,"  or  "Hi Tarot Rithvika,"  or  "Hi Psychic Zahira,"
-        consultant_name = ""
-        hi_match = re.match(r'Hi\s+([\w\s]+?)(?:\s*,|\.|\s+Below)', first_msg)
-        if hi_match:
-            parts = hi_match.group(1).strip().split()
-            # Drop known title prefixes; take the last remaining word as the name
-            name_parts = [p for p in parts if p not in _CONSULTANT_TITLE_PREFIXES]
-            consultant_name = name_parts[-1] if name_parts else (parts[-1] if parts else "")
-
-        # ---- third_party_names ---------------------------------------
-        # Build the per-session exclusion set
-        excluded = _NAME_STOPWORDS | {
-            user_name,
-            consultant_name,
-            # Also exclude all words from the title portion of the greeting
-            *(hi_match.group(1).split() if hi_match else []),
-        }
-        excluded.discard("")   # don't exclude the empty string
-
-        seen: dict[str, int] = {}   # name -> occurrence count
-
-        for m in user_msgs:
-            for word in _CAPS_WORD_RE.findall(m["message"]):
-                if word not in excluded and not _is_common_english(word):
-                    seen[word] = seen.get(word, 0) + 1
-
-        # Only keep names that appear at least twice — single occurrences are
-        # usually capitalised common words, not person names.
-        # Exception: if fewer than 10 unique candidates, keep singletons too
-        # so short sessions still yield results.
-        min_freq = 2 if len(seen) >= 10 else 1
-        third_party_names = [
-            name for name, cnt in sorted(seen.items(), key=lambda x: -x[1])
-            if cnt >= min_freq
-        ]
-
-        return user_name, consultant_name, third_party_names
-
-    # ------------------------------------------------------------------
-    # Private — utilities
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _clean_str(value: Any) -> str:
-        """Coerce a cell value to a stripped string; return '' for None."""
-        if value is None:
-            return ""
-        return str(value).strip()
-
-    def _require_loaded(self) -> None:
-        if not self._loaded:
-            raise RuntimeError("Call loader.load() before accessing sessions.")
-
-    # ------------------------------------------------------------------
-    # Private — summary printer
+    # Private — summary
     # ------------------------------------------------------------------
 
     def _print_summary(self) -> None:
-        sessions  = list(self._sessions.values())
+        sessions   = self._sessions
+        total      = len(sessions)
+        total_msgs = sum(len(s["messages"]) for s in sessions)
+        flagged    = sum(1 for s in sessions if s["astrotalk_flagged"])
 
-        total     = len(sessions)
-        cat_count = Counter(s["category"] for s in sessions)
-        msg_total = sum(len(s["messages"]) for s in sessions)
-
-        dates    = [s["date"] for s in sessions if s["date"]]
+        dates    = [s["session_date"] for s in sessions if s["session_date"]]
         date_min = min(dates) if dates else "N/A"
         date_max = max(dates) if dates else "N/A"
 
-        action_count  = Counter(s["action"] for s in sessions)
-        total_removed = sum(self.dedup_stats.values())
-
         print()
-        print("=" * 56)
-        print("  AstroTalk NSFW DataLoader - Session Summary")
-        print("=" * 56)
+        print("=" * 40)
+        print("  AstroTalk DataLoader - Session Summary")
+        print("=" * 40)
         print(f"  Total sessions  : {total}")
-        print(f"  Total messages  : {msg_total}  (after dedup)")
-        print(f"  Duplicates rmvd : {total_removed}")
-        print(f"  Date range      : {date_min[:10]}  to  {date_max[:10]}")
-        print()
-        print("  Sessions by category:")
-        for cat in sorted(self.VALID_CATEGORIES):
-            n = cat_count.get(cat, 0)
-            bar = "#" * n
-            print(f"    {cat:<20} {n:>3}  {bar}")
-        print()
-        print("  Action breakdown:")
-        for action, n in sorted(action_count.items()):
-            print(f"    {action:<20} {n:>3}")
-        print()
-        print("  Avg messages / session :", round(msg_total / total, 1) if total else 0)
-        print("=" * 56)
+        print(f"  Total messages  : {total_msgs}")
+        print(f"  Duplicates rmvd : {self._duplicates_removed}")
+        print(f"  Date range      : {date_min} to {date_max}")
+        print(f"  Sessions flagged by AstroTalk: {flagged}")
+        print("=" * 40)
         print()
 
 
 # ---------------------------------------------------------------------------
-# Quick self-test
+# Quick self-test — python engine/data_loader.py <path>
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    loader   = DataLoader()
-    sessions = loader.load()
+    import argparse
 
-    # ---- third-party name extraction report ----
-    print("Third-party name extraction — three target sessions")
-    print("=" * 56)
-    for oid in [296029912, 294055364, 296503802]:
-        s = loader.get_session(oid)
-        print(f"\n  order_id         : {oid}")
-        print(f"  category         : {s['category']}")
-        print(f"  human_feedback   : {s['human_feedback']}")
-        print(f"  user_name        : {s['user_name']!r}")
-        print(f"  consultant_name  : {s['consultant_name']!r}")
-        print(f"  third_party_names: {s['third_party_names']}")
+    parser = argparse.ArgumentParser(description="AstroTalk DataLoader self-test")
+    parser.add_argument("path", help="CSV file or folder containing CSV files")
+    args = parser.parse_args()
 
-    # ---- full dataset overview ----
-    print(f"\n{'='*56}")
-    print("Sessions with non-empty third_party_names:")
-    for s in sorted(sessions, key=lambda x: x["order_id"]):
-        if s["third_party_names"]:
-            print(f"  {s['order_id']}  ({s['category']:<20})  {s['third_party_names'][:5]}")
-
-    # ---- save updated JSON ----
-    out = loader.save_processed()
-    print(f"\nsave_processed() -> {out}")
+    loader   = DataLoader(args.path)
+    sessions = loader.load_sessions()
+    if sessions:
+        s = sessions[0]
+        print(f"First session : {s['session_id']}  ({len(s['messages'])} messages)")
+        print(f"  astrologer  : {s['astrologer_id']}")
+        print(f"  date        : {s['session_date']}  lang={s['language_code']}")
+        print(f"  flagged     : {s['astrotalk_flagged']}")

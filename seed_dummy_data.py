@@ -215,7 +215,7 @@ def generate_turns_and_flags(
                 "confidence_score":    round(random.uniform(0.75, 0.97), 2),
                 "reasoning":           pool["reasoning"],
                 "false_positive_risk": pool["fp_risk"],
-                "pattern_matched":     cat if pool["detection_layer"] == "REGEX" else None,
+                "pattern_matched":     message[:80],
             })
         else:
             message = random.choice(ASTRO_NORMAL)
