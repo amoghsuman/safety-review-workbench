@@ -160,6 +160,23 @@ def reviewer_stats():
         return []
 
 
+@app.get("/stats/violations")
+def violation_stats():
+    try:
+        with get_connection() as conn:
+            rows = conn.execute("""
+                SELECT f.category_code, COUNT(*) AS count
+                FROM flags f
+                JOIN sessions s ON s.session_id = f.session_id
+                WHERE s.overall_verdict != 'CLEAN'
+                GROUP BY f.category_code
+                ORDER BY count DESC
+            """).fetchall()
+        return [dict(row) for row in rows]
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — session list
 # NOTE: /sessions/pending must be defined BEFORE /sessions/{session_id}

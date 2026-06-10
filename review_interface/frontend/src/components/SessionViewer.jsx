@@ -118,6 +118,7 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
   const [selectedAction, setSelectedAction] = useState(null);
   const [note,           setNote]           = useState('');
   const [noteFocused,    setNoteFocused]    = useState(false);
+  const [noteValidation, setNoteValidation] = useState(false);
   const [submitting,     setSubmitting]     = useState(false);
   const [toast,          setToast]          = useState(null);
   const [showUpdateForm, setShowUpdateForm] = useState(false);
@@ -148,6 +149,7 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
     setData(null);
     setFlags([]);
     setNote('');
+    setNoteValidation(false);
     setSelectedAction(null);
     setShowUpdateForm(false);
     setSessionNote('');
@@ -192,10 +194,17 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
   const currentIdx = sessionList ? sessionList.findIndex((s) => s.session_id === sessionId) : -1;
   const prevId     = currentIdx > 0                      ? sessionList[currentIdx - 1]?.session_id : null;
   const nextId     = currentIdx < sessionList.length - 1 ? sessionList[currentIdx + 1]?.session_id : null;
+  const noteRequired = selectedAction === 'FALSE_POSITIVE' || selectedAction === 'ESCALATE';
+  const noteValid = !noteRequired || note.trim().length >= 10;
+  const submitDisabled = !selectedAction || !noteValid || submitting;
 
   // ── Review submit ─────────────────────────────────────────────────────────
   const handleSubmit = useCallback(async () => {
     if (submitting || !selectedAction) return;
+    if (!noteValid) {
+      setNoteValidation(true);
+      return;
+    }
     setSubmitting(true);
     try {
       await submitReview(sessionId, selectedAction, reviewerName, note, null);
@@ -205,7 +214,7 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
       setToast(`Error: ${err.message}`);
       setSubmitting(false);
     }
-  }, [submitting, selectedAction, sessionId, reviewerName, note, onBack]);
+  }, [submitting, selectedAction, noteValid, sessionId, reviewerName, note, onBack]);
 
   // ── Manual flag submit ────────────────────────────────────────────────────
   const handleManualFlag = async (turn, turnIdx) => {
@@ -651,7 +660,7 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
                     const isSelected = selectedAction === a.key;
                     const s = isSelected ? a.active : { bg: C.bgStatsrow, color: C.textSecondary, border: C.border };
                     return (
-                      <button key={a.key} onClick={() => setSelectedAction(a.key)} style={{
+                      <button key={a.key} onClick={() => { setSelectedAction(a.key); setNoteValidation(false); }} style={{
                         padding: '9px 0', fontSize: 13, fontWeight: isSelected ? 600 : 500,
                         borderRadius: 5, border: `1px solid ${s.border}`, background: s.bg, color: s.color,
                         cursor: 'pointer', outline: isSelected ? `2px solid ${s.border}` : 'none',
@@ -663,8 +672,14 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
                   })}
                 </div>
 
-                <textarea rows={3} placeholder="Add a note (optional)..." value={note}
-                  onChange={(e) => setNote(e.target.value)}
+                <div style={{
+                  fontSize: 11, fontFamily: MONO, color: noteRequired ? '#A32D2D' : C.textMuted,
+                  marginBottom: 6,
+                }}>
+                  {noteRequired ? 'Add a note (required for this decision)' : 'Add a note (optional)...'}
+                </div>
+                <textarea rows={3} value={note}
+                  onChange={(e) => { setNote(e.target.value); if (e.target.value.trim().length >= 10) setNoteValidation(false); }}
                   onFocus={() => setNoteFocused(true)} onBlur={() => setNoteFocused(false)}
                   style={{
                     width: '100%', padding: '10px 12px', fontSize: 13,
@@ -674,18 +689,29 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
                     transition: 'border-color 150ms, background 150ms', marginBottom: 0,
                   }}
                 />
+                {noteValidation && noteRequired && note.trim().length < 10 && (
+                  <div style={{ fontSize: 11, fontFamily: MONO, color: '#A32D2D', marginTop: 6 }}>
+                    Please explain your reasoning (min 10 characters)
+                  </div>
+                )}
 
-                <button onClick={handleSubmit} disabled={!selectedAction || submitting} style={{
-                  marginTop: 10, width: '100%', padding: 11, fontSize: 14, fontWeight: 500,
-                  borderRadius: 5, border: 'none',
-                  background: (!selectedAction || submitting) ? '#D4D0C9' : C.accent,
-                  color: (!selectedAction || submitting) ? C.textMuted : '#FFFFFF',
-                  cursor: (!selectedAction || submitting) ? 'not-allowed' : 'pointer',
-                  animation: submitting ? 'pulse 1s ease-in-out infinite' : 'none',
-                  transition: 'background 150ms',
-                }}>
-                  {submitting ? 'Saving…' : 'Submit Review'}
-                </button>
+                <div
+                  onMouseDown={() => { if (noteRequired && note.trim().length < 10) setNoteValidation(true); }}
+                  style={{ marginTop: 10, cursor: submitDisabled ? 'not-allowed' : 'pointer' }}
+                >
+                  <button onClick={handleSubmit} disabled={submitDisabled} style={{
+                    width: '100%', padding: 11, fontSize: 14, fontWeight: 500,
+                    borderRadius: 5, border: 'none',
+                    background: submitDisabled ? '#D4D0C9' : C.accent,
+                    color: submitDisabled ? C.textMuted : '#FFFFFF',
+                    cursor: submitDisabled ? 'not-allowed' : 'pointer',
+                    pointerEvents: submitDisabled ? 'none' : 'auto',
+                    animation: submitting ? 'pulse 1s ease-in-out infinite' : 'none',
+                    transition: 'background 150ms',
+                  }}>
+                    {submitting ? 'Saving…' : 'Submit Review'}
+                  </button>
+                </div>
               </>
             )}
           </div>

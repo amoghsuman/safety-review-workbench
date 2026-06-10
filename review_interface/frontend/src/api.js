@@ -19,6 +19,12 @@ export function getReviewerStats() {
   return request('/stats/reviewer');
 }
 
+export async function getViolationStats() {
+  const res = await fetch('/stats/violations');
+  if (!res.ok) throw new Error('Failed to fetch violation stats');
+  return res.json();
+}
+
 // ── Session list ───────────────────────────────────────────────────────────
 
 export function getSessions(filters = {}) {

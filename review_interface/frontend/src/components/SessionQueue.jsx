@@ -5,7 +5,7 @@ import Footer from './Footer';
 import VerdictBadge from './VerdictBadge';
 import StatusBadge from './StatusBadge';
 import LoadingSpinner from './LoadingSpinner';
-import { getSessions, getStats, submitReview, getReviewerStats, exportCsv } from '../api';
+import { getSessions, getStats, submitReview, getReviewerStats, exportCsv, getViolationStats } from '../api';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -66,6 +66,11 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
   const [reviewerStats,   setReviewerStats]   = useState([]);
   const [loadingProgress, setLoadingProgress] = useState(false);
 
+  // ── Violation heatmap state ────────────────────────────────────────────
+  const [showHeatmap,     setShowHeatmap]     = useState(false);
+  const [heatmapData,     setHeatmapData]     = useState([]);
+  const [loadingHeatmap,  setLoadingHeatmap]  = useState(false);
+
   // ── Data fetching ──────────────────────────────────────────────────────
 
   const fetchAll = useCallback(() => {
@@ -118,6 +123,7 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
     ? 'No sessions match the selected filters.'
     : 'No sessions match the search or confidence filter.';
   const showClearLink = sessions.length === 0 && hasFilters;
+  const heatmapMax    = heatmapData.length > 0 ? Math.max(...heatmapData.map(d => d.count)) : 1;
 
   // ── Feature 4 — Quick-clear ────────────────────────────────────────────
 
@@ -139,6 +145,34 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
     setExporting(true);
     exportCsv();
     setTimeout(() => setExporting(false), 1000);
+  };
+
+  // ── Violation heatmap ──────────────────────────────────────────────────
+
+  const CATEGORY_COLORS = {
+    OFF_PLATFORM_SOLICITATION:   '#0F6E56',
+    NSFW:                        '#A32D2D',
+    FEAR_MANIPULATION:           '#854F0B',
+    FINANCIAL_SOLICITATION:      '#854F0B',
+    PERSONAL_DATA_COLLECTION:    '#185FA5',
+    ABUSIVE_LANGUAGE:            '#A32D2D',
+    HATE_SPEECH:                 '#A32D2D',
+    IDENTITY_FRAUD:              '#185FA5',
+    FAKE_REMEDIES:               '#854F0B',
+    UNAUTHORIZED_MEDICAL_ADVICE: '#3B6D11',
+    COMPETITOR_PROMOTION:        '#6B6860',
+    OTHER:                       '#6B6860',
+  };
+
+  const handleToggleHeatmap = () => {
+    const next = !showHeatmap;
+    setShowHeatmap(next);
+    if (next) {
+      setLoadingHeatmap(true);
+      getViolationStats()
+        .then((data) => { setHeatmapData(data); setLoadingHeatmap(false); })
+        .catch(() => setLoadingHeatmap(false));
+    }
   };
 
   // ── Feature 7 — Team Progress toggle ──────────────────────────────────
@@ -287,17 +321,74 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
       </div>
 
       {/* Stats strip */}
-      <div style={{ flexShrink: 0, display: 'flex', background: C.bgStatsrow, borderBottom: `1px solid ${C.border}` }}>
-        {statCells.map((cell, i) => (
+      <div style={{ flexShrink: 0, display: 'flex', alignItems: 'stretch', background: C.bgStatsrow, borderBottom: `1px solid ${C.border}` }}>
+        {statCells.map((cell) => (
           <div key={cell.label} style={{ flex: 1, padding: '10px 20px',
-            borderRight: i < statCells.length - 1 ? `1px solid ${C.border}` : 'none' }}>
+            borderRight: `1px solid ${C.border}` }}>
             <div style={{ fontSize: 18, fontFamily: MONO, fontWeight: 500, color: cell.color }}>
               {cell.value}
             </div>
             <div style={{ fontSize: 11, color: C.textSecondary, marginTop: 2 }}>{cell.label}</div>
           </div>
         ))}
+        <div style={{ display: 'flex', alignItems: 'center', padding: '0 20px', flexShrink: 0 }}>
+          <span
+            onClick={handleToggleHeatmap}
+            style={{ fontSize: 11, fontFamily: MONO, color: '#0F6E56', cursor: 'pointer', whiteSpace: 'nowrap' }}
+          >
+            Violation Breakdown {showHeatmap ? '▴' : '▾'}
+          </span>
+        </div>
       </div>
+
+      {/* Violation heatmap — collapsible */}
+      {showHeatmap && (
+        <div style={{
+          flexShrink: 0, margin: '0 20px 12px', background: '#FFFFFF',
+          border: '1px solid #E2DED8', borderRadius: 6, padding: '16px 20px',
+        }}>
+          {loadingHeatmap ? (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10,
+              color: C.textSecondary, fontSize: 13 }}>
+              <LoadingSpinner size={16} /> Loading…
+            </div>
+          ) : heatmapData.length === 0 ? (
+            <div style={{ fontSize: 13, color: '#6B6860', fontStyle: 'italic', textAlign: 'center' }}>
+              No violation data yet.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {heatmapData.map((item) => (
+                <div key={item.category_code} style={{ display: 'flex', alignItems: 'center', height: 32 }}>
+                  <span style={{
+                    fontSize: 13, fontFamily: MONO, color: '#1C1C1A',
+                    width: 260, flexShrink: 0,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    {item.category_code}
+                  </span>
+                  <div style={{
+                    flex: 1, height: 8, background: '#E2DED8',
+                    borderRadius: 4, margin: '0 12px', position: 'relative',
+                  }}>
+                    <div style={{
+                      height: '100%', borderRadius: 4,
+                      width: `${(item.count / heatmapMax) * 100}%`,
+                      background: CATEGORY_COLORS[item.category_code] ?? '#6B6860',
+                    }} />
+                  </div>
+                  <span style={{
+                    fontSize: 13, fontFamily: MONO, color: '#6B6860',
+                    minWidth: 32, textAlign: 'right',
+                  }}>
+                    {item.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Feature 7 — Team Progress collapsible section */}
       {showProgress && (
