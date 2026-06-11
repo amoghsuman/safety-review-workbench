@@ -84,6 +84,8 @@ class DataLoader:
         self._sessions: list[dict[str, Any]] = []
         self._loaded = False
         self._duplicates_removed = 0
+        from engine.language_detector import LanguageDetector
+        self.language_detector = LanguageDetector()
 
     # ------------------------------------------------------------------
     # Public API
@@ -208,23 +210,47 @@ class DataLoader:
                 first_val("language")
             )
 
+            # ── Multilingual session check ─────────────────────────────
+            raw_lang       = first_val("language")
+            lang_str       = str(raw_lang).strip() if raw_lang else ''
+            lang_codes     = [c.strip() for c in lang_str.split(',') if c.strip()]
+            is_multilingual = len(lang_codes) > 1
+
             # ── Turn list ──────────────────────────────────────────────
             messages: list[dict[str, Any]] = []
             for _, row in group.iterrows():
-                ts_val  = self._parse_timestamp(row.get("sent_at_ist", ""))
                 turn_id = self._parse_turn_id(
                     row.get("message_seq", ""), len(messages) + 1
                 )
+                # Per-turn language: run detector on multilingual sessions;
+                # inherit session language otherwise.
+                # detect() returns LanguageResult — use .primary_language for name.
+                if is_multilingual:
+                    try:
+                        result       = self.language_detector.detect(
+                                           str(row.get("message_text", ""))
+                                       )
+                        turn_language = result.primary_language if result else language_detected
+                    except Exception:
+                        turn_language = language_detected
+                else:
+                    turn_language = language_detected
+
                 messages.append({
-                    "turn_id":      turn_id,
-                    "speaker":      self._normalise_speaker(
-                                        row.get("sender", "")
-                                    ),
-                    "message_text": str(row.get("message_text", "")).strip(),
-                    "is_automated": self._normalise_automated(
-                                        row.get("is_automated_message", 0)
-                                    ),
-                    "timestamp":    ts_val,
+                    "turn_id":           turn_id,
+                    "speaker":           self._normalise_speaker(
+                                             row.get("sender", "")
+                                         ),
+                    "message_text":      str(row.get("message_text", "")).strip(),
+                    "is_automated":      self._normalise_automated(
+                                             row.get("is_automated_message", 0)
+                                         ),
+                    "timestamp":         self._parse_timestamp(
+                                             row.get("sent_at_ist")
+                                             or row.get("sent_at")
+                                             or row.get("timestamp")
+                                         ),
+                    "language_detected": turn_language,
                 })
 
             sessions.append({
