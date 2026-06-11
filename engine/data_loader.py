@@ -204,17 +204,9 @@ class DataLoader:
                 return nonempty.iloc[0] if not nonempty.empty else None
 
             # ── Language code → name mapping ───────────────────────────
-            raw_lang = first_val("language")
-            try:
-                lang_code = (
-                    int(float(str(raw_lang)))
-                    if not pd.isna(raw_lang)
-                    else None
-                )
-            except Exception:
-                lang_code = None
-            language_code     = str(lang_code) if lang_code else None
-            language_detected = LANGUAGE_MAP.get(lang_code, None)
+            language_code, language_detected = self._parse_language(
+                first_val("language")
+            )
 
             # ── Turn list ──────────────────────────────────────────────
             messages: list[dict[str, Any]] = []
@@ -276,10 +268,15 @@ class DataLoader:
     # Private — field normalisation
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _normalise_speaker(sender: Any) -> str:
-        """'consultant' → 'ASTROLOGER', 'user' → 'USER', else 'UNKNOWN'."""
-        return _SPEAKER_MAP.get(str(sender).strip().lower(), "UNKNOWN")
+    def _normalise_speaker(self, val: Any) -> str:
+        if val is None:
+            return 'UNKNOWN'
+        v = str(val).strip().upper()
+        if v in ('USER',):
+            return 'USER'
+        if v in ('ASTROLOGER', 'CONSULTANT'):
+            return 'ASTROLOGER'
+        return 'UNKNOWN'
 
     @staticmethod
     def _normalise_automated(val: Any) -> int:
@@ -290,6 +287,34 @@ class DataLoader:
             return 1 if int(str(val).strip()) else 0
         except (ValueError, TypeError):
             return 0
+
+    def _parse_language(self, val: Any) -> tuple:
+        """
+        Parse a language field that may contain comma-separated numeric codes
+        (e.g. '1,2,5'). Returns (all_codes_str, primary_language_name).
+        """
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None, None
+
+        raw = str(val).strip()
+
+        codes = []
+        for part in raw.split(','):
+            part = part.strip()
+            try:
+                code = int(float(part))
+                if code in LANGUAGE_MAP:
+                    codes.append(code)
+            except Exception:
+                continue
+
+        if not codes:
+            return raw, None
+
+        primary_code = codes[0]
+        primary_name = LANGUAGE_MAP.get(primary_code)
+        all_codes    = ','.join(str(c) for c in codes)
+        return all_codes, primary_name
 
     def _parse_timestamp(self, val: Any) -> str | None:
         if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -331,9 +356,22 @@ class DataLoader:
         total_msgs = sum(len(s["messages"]) for s in sessions)
         flagged    = sum(1 for s in sessions if s["astrotalk_flagged"])
 
-        dates    = [s["session_date"] for s in sessions if s["session_date"]]
-        date_min = min(dates) if dates else "N/A"
-        date_max = max(dates) if dates else "N/A"
+        all_dates = [
+            s.get("session_date")
+            for s in sessions
+            if s.get("session_date")
+        ]
+        if all_dates:
+            date_range_start = min(all_dates)
+            date_range_end   = max(all_dates)
+        else:
+            all_ts = [
+                s.get("session_start")
+                for s in sessions
+                if s.get("session_start")
+            ]
+            date_range_start = min(all_ts)[:10] if all_ts else "N/A"
+            date_range_end   = max(all_ts)[:10] if all_ts else "N/A"
 
         print()
         print("=" * 40)
@@ -342,7 +380,7 @@ class DataLoader:
         print(f"  Total sessions  : {total}")
         print(f"  Total messages  : {total_msgs}")
         print(f"  Duplicates rmvd : {self._duplicates_removed}")
-        print(f"  Date range      : {date_min} to {date_max}")
+        print(f"  Date range      : {date_range_start} to {date_range_end}")
         print(f"  Sessions flagged by AstroTalk: {flagged}")
 
         lang_counts = Counter(
