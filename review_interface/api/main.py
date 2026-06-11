@@ -116,35 +116,40 @@ def health():
 def stats():
     try:
         with get_connection() as conn:
-            total    = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-            pending  = conn.execute(
+            total       = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            pending     = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE review_status = 'PENDING'"
             ).fetchone()[0]
-            reviewed = conn.execute(
+            reviewed    = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE review_status != 'PENDING'"
             ).fetchone()[0]
-            severe   = conn.execute(
+            severe      = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE overall_verdict = 'SEVERE'"
             ).fetchone()[0]
-            flagged  = conn.execute(
+            flagged     = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE overall_verdict = 'FLAGGED'"
             ).fetchone()[0]
-            clean    = conn.execute(
+            clean       = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE overall_verdict = 'CLEAN'"
+            ).fetchone()[0]
+            unprocessed = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE overall_verdict = 'UNPROCESSED'"
             ).fetchone()[0]
     except Exception:
         return {
             "total_sessions": 0, "total_pending": 0, "total_reviewed": 0,
             "count_severe": 0, "count_flagged": 0, "count_clean": 0,
+            "count_unprocessed": 0,
         }
 
     return {
-        "total_sessions": total,
-        "total_pending":  pending,
-        "total_reviewed": reviewed,
-        "count_severe":   severe,
-        "count_flagged":  flagged,
-        "count_clean":    clean,
+        "total_sessions":    total,
+        "total_pending":     pending,
+        "total_reviewed":    reviewed,
+        "count_severe":      severe,
+        "count_flagged":     flagged,
+        "count_clean":       clean,
+        "count_unprocessed": unprocessed,
     }
 
 

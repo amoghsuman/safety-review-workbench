@@ -98,19 +98,21 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
   const clearFilters = () => { setVerdictFilter(''); setStatusFilter(''); };
   const hasFilters   = verdictFilter || statusFilter;
 
-  const severe   = stats?.count_severe   ?? 0;
-  const flagged  = stats?.count_flagged  ?? 0;
-  const clean    = stats?.count_clean    ?? 0;
-  const total    = stats?.total_sessions ?? 0;
-  const pending  = stats?.total_pending  ?? 0;
-  const reviewed = total - pending;
+  const severe       = stats?.count_severe       ?? 0;
+  const flagged      = stats?.count_flagged      ?? 0;
+  const clean        = stats?.count_clean        ?? 0;
+  const unprocessed  = stats?.count_unprocessed  ?? 0;
+  const total        = stats?.total_sessions     ?? 0;
+  const pending      = stats?.total_pending      ?? 0;
+  const reviewed     = total - pending;
 
   const statCells = [
-    { label: 'Severe',         value: severe,   color: C.severeText  },
-    { label: 'Flagged',        value: flagged,  color: C.flaggedText },
-    { label: 'Clean',          value: clean,    color: C.cleanText   },
-    { label: 'Total sessions', value: total,    color: C.textPrimary },
-    { label: 'Pending review', value: pending,  color: C.accent      },
+    { label: 'Severe',         value: severe,       color: C.severeText  },
+    { label: 'Flagged',        value: flagged,       color: C.flaggedText },
+    { label: 'Clean',          value: clean,         color: C.cleanText   },
+    { label: 'Unprocessed',    value: unprocessed,   color: '#444441'     },
+    { label: 'Total sessions', value: total,         color: C.textPrimary },
+    { label: 'Pending review', value: pending,       color: C.accent      },
   ];
 
   // Client-side filters applied on top of server-filtered list
@@ -250,6 +252,7 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
             <option value="SEVERE">SEVERE</option>
             <option value="FLAGGED">FLAGGED</option>
             <option value="CLEAN">CLEAN</option>
+            <option value="UNPROCESSED">UNPROCESSED</option>
           </select>
 
           <select style={selectSt} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>

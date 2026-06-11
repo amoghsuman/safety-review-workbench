@@ -278,11 +278,90 @@ def run_batch(data_path: str, fresh_run: bool = False) -> None:
     )
 
 
-def main() -> None:
+def ingest_only(data_path: str) -> None:
+    """
+    Loads sessions from data_path and writes them to the DB with
+    overall_verdict='UNPROCESSED'. Skips sessions already in the
+    checkpoint. No AI classification is run.
+    """
     print("=" * 60)
-    print("  AstroTalk Content Safety — Batch Pipeline Starting")
+    print("  AstroTalk Content Safety — Ingestion Only Mode")
     print("=" * 60)
 
+    initialise_db()
+
+    loader   = DataLoader(data_path)
+    sessions = loader.load_sessions()
+
+    processed_ids = load_checkpoint()
+    pending = [s for s in sessions if str(s["session_id"]) not in processed_ids]
+    print(
+        f"Sessions: total={len(sessions)}  "
+        f"already_ingested={len(processed_ids)}  "
+        f"to_ingest={len(pending)}"
+    )
+
+    n_written = 0
+
+    try:
+        for session in pending:
+            session_id = str(session["session_id"])
+
+            session_data = {
+                "session_id":              session_id,
+                "astrologer_id":           session.get("astrologer_id"),
+                "user_id":                 None,
+                "session_start":           session.get("session_start"),
+                "session_end":             session.get("session_end"),
+                "duration_minutes":        session.get("duration_minutes"),
+                "session_type":            session.get("session_type", "chat"),
+                "session_date":            session.get("session_date"),
+                "month":                   session.get("month"),
+                "language_code":           session.get("language_code"),
+                "language_detected":       None,
+                "overall_verdict":         "UNPROCESSED",
+                "confidence_score":        None,
+                "astrotalk_flagged":       session.get("astrotalk_flagged", 0),
+                "astrotalk_flag_category": None,
+                "astrotalk_severity":      None,
+                "review_status":           "PENDING",
+            }
+
+            turns = [
+                {
+                    "turn_id":           msg["turn_id"],
+                    "speaker":           msg["speaker"],
+                    "message_text":      msg["message_text"],
+                    "timestamp":         msg["timestamp"],
+                    "language_detected": None,
+                    "is_automated":      msg["is_automated"],
+                }
+                for msg in session.get("messages", [])
+                if msg.get("is_automated") != 1
+            ]
+
+            write_session_complete(session_id, session_data, turns, [])
+
+            processed_ids.add(session_id)
+            n_written += 1
+
+            if n_written % 100 == 0:
+                save_checkpoint(processed_ids)
+
+    except KeyboardInterrupt:
+        save_checkpoint(processed_ids)
+        print(f"\nIngestion interrupted — {n_written} sessions written before interrupt.")
+        return
+
+    save_checkpoint(processed_ids)
+
+    print()
+    print("=" * 60)
+    print(f"  Ingestion complete. {n_written} sessions written to {DB_PATH}")
+    print("=" * 60)
+
+
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="AstroTalk Content Safety — Batch Pipeline",
     )
@@ -290,20 +369,30 @@ def main() -> None:
         "--data",
         required=True,
         metavar="FILE",
-        help="Path to the input Excel data file (.xlsx)",
+        help="Path to the input data file or folder",
     )
     parser.add_argument(
         "--fresh",
         action="store_true",
         help="Ignore checkpoint and reprocess all sessions from scratch",
     )
+    parser.add_argument(
+        "--ingest-only",
+        action="store_true",
+        help="Load sessions into the DB without running AI classification",
+    )
     args = parser.parse_args()
 
-    run_batch(args.data, fresh_run=args.fresh)
-
-    print("=" * 60)
-    print(f"  Batch run complete. Results written to {DB_PATH}")
-    print("=" * 60)
+    if args.ingest_only:
+        ingest_only(args.data)
+    else:
+        print("=" * 60)
+        print("  AstroTalk Content Safety — Batch Pipeline Starting")
+        print("=" * 60)
+        run_batch(args.data, fresh_run=args.fresh)
+        print("=" * 60)
+        print(f"  Batch run complete. Results written to {DB_PATH}")
+        print("=" * 60)
 
 
 if __name__ == "__main__":

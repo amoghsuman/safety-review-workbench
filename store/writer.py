@@ -82,8 +82,10 @@ def write_session_complete(
     session_id: str,
     session_data: dict,
     turns: list[dict],
-    flags: list[dict],
+    flags: list[dict] = None,
 ) -> None:
+    if flags is None:
+        flags = []
     conn = get_connection()
     try:
         with conn:
@@ -115,29 +117,30 @@ def write_session_complete(
                 ],
             )
 
-            # write flags
-            conn.executemany(
-                """
-                INSERT OR IGNORE INTO flags
-                    (session_id, turn_id, category_code, detection_layer, severity,
-                     confidence_score, reasoning, false_positive_risk, pattern_matched)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        session_id,
-                        f.get("turn_id"),
-                        f.get("category_code"),
-                        f.get("detection_layer"),
-                        f.get("severity"),
-                        f.get("confidence_score"),
-                        f.get("reasoning"),
-                        f.get("false_positive_risk"),
-                        f.get("pattern_matched"),
-                    )
-                    for f in flags
-                ],
-            )
+            # write flags — skipped when list is empty (ingestion-only mode)
+            if flags:
+                conn.executemany(
+                    """
+                    INSERT OR IGNORE INTO flags
+                        (session_id, turn_id, category_code, detection_layer, severity,
+                         confidence_score, reasoning, false_positive_risk, pattern_matched)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            session_id,
+                            f.get("turn_id"),
+                            f.get("category_code"),
+                            f.get("detection_layer"),
+                            f.get("severity"),
+                            f.get("confidence_score"),
+                            f.get("reasoning"),
+                            f.get("false_positive_risk"),
+                            f.get("pattern_matched"),
+                        )
+                        for f in flags
+                    ],
+                )
     except sqlite3.Error as exc:
         logger.error("write_session_complete failed for session %s: %s", session_id, exc)
         raise
