@@ -42,6 +42,36 @@ _BENGALI_RANGE    = (0x0980, 0x09FF)
 _GUJARATI_RANGE   = (0x0A80, 0x0AFF)
 
 # ---------------------------------------------------------------------------
+# AstroTalk numeric language code → human-readable name
+# Code 16 is intentionally absent from this map.
+# ---------------------------------------------------------------------------
+LANGUAGE_MAP: dict[int, str] = {
+    1:  'English',
+    2:  'Hindi',
+    3:  'Tamil',
+    4:  'Punjabi',
+    5:  'Marathi',
+    6:  'Gujarati',
+    7:  'Bengali',
+    8:  'French',
+    9:  'Odia',
+    10: 'Telugu',
+    11: 'Kannada',
+    12: 'Malayalam',
+    13: 'Sanskrit',
+    14: 'Assamese',
+    15: 'German',
+    17: 'Spanish',
+    18: 'Marwari',
+    19: 'Manipuri',
+    20: 'Urdu',
+    21: 'Sindhi',
+    22: 'Kashmiri',
+    23: 'Bodo',
+    24: 'Nepali',
+}
+
+# ---------------------------------------------------------------------------
 # Langdetect codes that reliably map to real South-Asian / world languages
 # (i.e., NOT Hinglish masquerading as something else)
 # ---------------------------------------------------------------------------
@@ -112,6 +142,9 @@ class LanguageDetector:
 
     session_lang = detector.analyse_session(session["messages"])
     instruction  = detector.get_language_instruction(session_lang)
+
+    # Fast path when AstroTalk already provided the language code:
+    language = detector.detect_from_code(session["language_code"])
     """
 
     # ------------------------------------------------------------------
@@ -421,6 +454,27 @@ class LanguageDetector:
 
         return body + suffix
 
+    def detect_from_code(self, language_code: str | int | None) -> str | None:
+        """
+        Fast path: convert AstroTalk's numeric language_code to a language name
+        using LANGUAGE_MAP. Use this when the CSV already carries the code so
+        auto-detection on raw text can be skipped.
+
+        Returns the mapped language name, or None if the code is absent,
+        non-numeric, or not present in the map (including the intentionally
+        absent code 16).
+
+        Auto-detection via detect() / analyse_session() remains the fallback
+        when this method returns None.
+        """
+        if language_code is None:
+            return None
+        try:
+            code = int(float(str(language_code).strip()))
+        except (ValueError, TypeError):
+            return None
+        return LANGUAGE_MAP.get(code, None)
+
     def detect_script(self, text: str) -> str:
         """
         Identify the dominant writing script in the text using Unicode ranges.
@@ -543,10 +597,10 @@ if __name__ == "__main__":
         {
             "id":   "T2",
             "desc": "Devanagari Hindi",
-            "text": "\u092e\u0947\u0930\u0940 \u0936\u093e\u0926\u0940 \u0915\u092c "
-                    "\u0939\u094b\u0917\u0940 \u0914\u0930 \u092e\u0947\u0930\u093e "
-                    "\u092d\u0935\u093f\u0937\u094d\u092f \u0915\u0948\u0938\u093e "
-                    "\u0939\u094b\u0917\u093e",
+            "text": "मेरी शादी कब "
+                    "होगी और मेरा "
+                    "भविष्य कैसा "
+                    "होगा",
             "expect_primary":  "Hindi",
             "expect_hinglish": False,
             "expect_script":   "Devanagari",
@@ -570,9 +624,9 @@ if __name__ == "__main__":
         {
             "id":   "T5",
             "desc": "Tamil",
-            "text": "\u0b8e\u0ba9\u0bcd \u0ba4\u0bbf\u0bb0\u0bc1\u0bae\u0ba3 "
-                    "\u0bb5\u0bbe\u0bb4\u0bcd\u0b95\u0bcd\u0b95\u0bc8 "
-                    "\u0b8e\u0baa\u0bcd\u0baa\u0b9f\u0bbf \u0b87\u0bb0\u0bc1\u0b95\u0bcd\u0b95\u0bc1\u0bae\u0bcd",
+            "text": "என் திருமண "
+                    "வாழ்க்கை "
+                    "எப்படி இருக்கும்",
             "expect_primary":  "Tamil",
             "expect_hinglish": False,
             "expect_script":   "Tamil",
@@ -616,6 +670,23 @@ if __name__ == "__main__":
         print(f"         langdetect raw       : {result.detected_by_langdetect!r}")
         if "note" in t:
             print(f"         note                 : {t['note']}")
+
+    print()
+    print("  --- detect_from_code tests ---")
+    code_tests = [
+        ("2",   "Hindi"),
+        ("3",   "Tamil"),
+        ("10",  "Telugu"),
+        ("16",  None),     # intentionally absent
+        ("99",  None),     # out of range
+        ("abc", None),     # non-numeric
+        (None,  None),     # missing
+        (1,     "English"),# int input
+    ]
+    for code, expected in code_tests:
+        got = detector.detect_from_code(code)
+        status = "PASS" if got == expected else "FAIL"
+        print(f"  [{status}] detect_from_code({code!r}) → {got!r}  (expected {expected!r})")
 
     print()
     print("=" * 64)
