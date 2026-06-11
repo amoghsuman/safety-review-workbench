@@ -175,11 +175,16 @@ class DataLoader:
             # ── Timestamps ────────────────────────────────────────────
             timestamps = group["sent_at_ist"].apply(self._parse_timestamp)
             valid_ts   = [t for t in timestamps if t is not None]
-            session_start = min(valid_ts).isoformat() if valid_ts else None
-            session_end   = max(valid_ts).isoformat() if valid_ts else None
+            session_start = min(valid_ts) if valid_ts else None
+            session_end   = max(valid_ts) if valid_ts else None
             if len(valid_ts) >= 2:
-                delta    = (max(valid_ts) - min(valid_ts)).total_seconds() / 60
-                duration = round(delta, 1)
+                try:
+                    dt_min   = datetime.fromisoformat(min(valid_ts))
+                    dt_max   = datetime.fromisoformat(max(valid_ts))
+                    delta    = (dt_max - dt_min).total_seconds() / 60
+                    duration = round(delta, 1)
+                except Exception:
+                    duration = 0.0
             else:
                 duration = 0.0
 
@@ -227,7 +232,7 @@ class DataLoader:
                     "is_automated": self._normalise_automated(
                                         row.get("is_automated_message", 0)
                                     ),
-                    "timestamp":    ts_val.isoformat() if ts_val else None,
+                    "timestamp":    ts_val,
                 })
 
             sessions.append({
@@ -286,32 +291,24 @@ class DataLoader:
         except (ValueError, TypeError):
             return 0
 
-    @staticmethod
-    def _parse_timestamp(val: Any) -> datetime | None:
-        """
-        Try common IST datetime formats in order; fall back to pandas
-        inference for unusual formats. Returns None on any failure —
-        never raises.
-        """
-        raw = str(val).strip() if val is not None else ""
-        if not raw:
+    def _parse_timestamp(self, val: Any) -> str | None:
+        if val is None or (isinstance(val, float) and pd.isna(val)):
             return None
-        for fmt in (
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S",
-            "%d-%m-%Y %H:%M:%S",
-            "%d/%m/%Y %H:%M:%S",
-            "%Y-%m-%d %H:%M",
-            "%d-%m-%Y %H:%M",
-        ):
-            try:
-                return datetime.strptime(raw, fmt)
-            except ValueError:
-                continue
         try:
-            return pd.to_datetime(raw, dayfirst=False).to_pydatetime()
+            return pd.to_datetime(
+                str(val).strip(),
+                format='%Y-%m-%d %H:%M:%S',
+                dayfirst=False,
+            ).isoformat()
         except Exception:
-            return None
+            try:
+                return pd.to_datetime(
+                    str(val).strip(),
+                    dayfirst=False,
+                    infer_datetime_format=True,
+                ).isoformat()
+            except Exception:
+                return None
 
     @staticmethod
     def _parse_turn_id(val: Any, fallback: int) -> int:
