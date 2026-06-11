@@ -28,6 +28,7 @@ def initialise_db() -> None:
         "ALTER TABLE sessions ADD COLUMN session_date TEXT",
         "ALTER TABLE sessions ADD COLUMN month TEXT",
         "ALTER TABLE sessions ADD COLUMN language_code TEXT",
+        "ALTER TABLE turns ADD COLUMN has_link INTEGER DEFAULT 0",
     ]
 
     with get_connection() as conn:

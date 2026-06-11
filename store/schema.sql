@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS turns (
     is_automated        INTEGER DEFAULT 0,
     timestamp           TEXT,
     language_detected   TEXT,
+    has_link            INTEGER DEFAULT 0,
     PRIMARY KEY (session_id, turn_id),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );

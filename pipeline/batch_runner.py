@@ -318,7 +318,7 @@ def ingest_only(data_path: str) -> None:
                 "session_date":            session.get("session_date"),
                 "month":                   session.get("month"),
                 "language_code":           session.get("language_code"),
-                "language_detected":       None,
+                "language_detected":       session.get("language_detected"),
                 "overall_verdict":         "UNPROCESSED",
                 "confidence_score":        None,
                 "astrotalk_flagged":       session.get("astrotalk_flagged", 0),
@@ -333,11 +333,10 @@ def ingest_only(data_path: str) -> None:
                     "speaker":           msg["speaker"],
                     "message_text":      msg["message_text"],
                     "timestamp":         msg["timestamp"],
-                    "language_detected": None,
+                    "language_detected": msg.get("language_detected"),
                     "is_automated":      msg["is_automated"],
                 }
                 for msg in session.get("messages", [])
-                if msg.get("is_automated") != 1
             ]
 
             write_session_complete(session_id, session_data, turns, [])

@@ -6,6 +6,22 @@ session objects for the classification pipeline.
 Accepts either a single CSV file path or a folder of CSV files.
 All .csv files in a folder are concatenated and processed as one dataset.
 
+Confirmed CSV schema
+--------------------
+  session_id           - integer
+  message_seq          - integer (turn ID)
+  sender               - 'USER' or 'ASTROLOGER'
+  message_text         - string
+  is_automated_message - integer 0/1
+  sent_at_ist          - '2026-03-19 04:02:25+00:00' (ISO 8601 with tz offset)
+  has_link             - integer 0/1
+  month                - integer 1-12
+  flagged              - 'yes' or 'no'
+  language             - comma-separated numeric codes e.g. '1,2,5'
+
+Note: session_date and astrologer_id are NOT in this CSV.
+session_date is derived from the earliest sent_at_ist in the session.
+
 Usage
 -----
     loader   = DataLoader('data/raw/astrotalk_data.csv')
@@ -58,7 +74,25 @@ LANGUAGE_MAP: dict[int, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Speaker normalisation
+# Month integer → name
+# ---------------------------------------------------------------------------
+MONTH_MAP: dict[int, str] = {
+    1:  'January',
+    2:  'February',
+    3:  'March',
+    4:  'April',
+    5:  'May',
+    6:  'June',
+    7:  'July',
+    8:  'August',
+    9:  'September',
+    10: 'October',
+    11: 'November',
+    12: 'December',
+}
+
+# ---------------------------------------------------------------------------
+# Speaker normalisation (kept for reference; logic now in _normalise_speaker)
 # ---------------------------------------------------------------------------
 _SPEAKER_MAP = {
     "consultant": "ASTROLOGER",
@@ -179,6 +213,8 @@ class DataLoader:
             valid_ts   = [t for t in timestamps if t is not None]
             session_start = min(valid_ts) if valid_ts else None
             session_end   = max(valid_ts) if valid_ts else None
+            # Derive session_date from earliest timestamp — not in CSV directly
+            session_date  = session_start[:10] if session_start else None
             if len(valid_ts) >= 2:
                 try:
                     dt_min   = datetime.fromisoformat(min(valid_ts))
@@ -205,15 +241,22 @@ class DataLoader:
                 nonempty = nonempty[nonempty != ""]
                 return nonempty.iloc[0] if not nonempty.empty else None
 
+            # ── Month integer → name ───────────────────────────────────
+            month_val = first_val("month")
+            try:
+                month_name = MONTH_MAP.get(int(month_val), str(month_val))
+            except Exception:
+                month_name = str(month_val) if month_val else None
+
             # ── Language code → name mapping ───────────────────────────
             language_code, language_detected = self._parse_language(
                 first_val("language")
             )
 
             # ── Multilingual session check ─────────────────────────────
-            raw_lang       = first_val("language")
-            lang_str       = str(raw_lang).strip() if raw_lang else ''
-            lang_codes     = [c.strip() for c in lang_str.split(',') if c.strip()]
+            raw_lang        = first_val("language")
+            lang_str        = str(raw_lang).strip() if raw_lang else ''
+            lang_codes      = [c.strip() for c in lang_str.split(',') if c.strip()]
             is_multilingual = len(lang_codes) > 1
 
             # ── Turn list ──────────────────────────────────────────────
@@ -227,9 +270,9 @@ class DataLoader:
                 # detect() returns LanguageResult — use .primary_language for name.
                 if is_multilingual:
                     try:
-                        result       = self.language_detector.detect(
-                                           str(row.get("message_text", ""))
-                                       )
+                        result        = self.language_detector.detect(
+                                            str(row.get("message_text", ""))
+                                        )
                         turn_language = result.primary_language if result else language_detected
                     except Exception:
                         turn_language = language_detected
@@ -251,14 +294,19 @@ class DataLoader:
                                              or row.get("timestamp")
                                          ),
                     "language_detected": turn_language,
+                    "has_link":          int(row.get("has_link", 0) or 0),
                 })
 
             sessions.append({
                 "session_id":              session_id,
-                "astrologer_id":           first_val("astrologer_id"),
+                "astrologer_id":           (
+                                               first_val("astrologer_id")
+                                               if "astrologer_id" in group.columns
+                                               else None
+                                           ),
                 "user_id":                 None,
-                "session_date":            first_val("session_date"),
-                "month":                   first_val("month"),
+                "session_date":            session_date,
+                "month":                   month_name,
                 "language_code":           language_code,
                 "language_detected":       language_detected,
                 "session_type":            "chat",
@@ -298,7 +346,7 @@ class DataLoader:
         if val is None:
             return 'UNKNOWN'
         v = str(val).strip().upper()
-        if v in ('USER',):
+        if v == 'USER':
             return 'USER'
         if v in ('ASTROLOGER', 'CONSULTANT'):
             return 'ASTROLOGER'
@@ -343,29 +391,21 @@ class DataLoader:
         return all_codes, primary_name
 
     def _parse_timestamp(self, val: Any) -> str | None:
-        if val is None or (isinstance(val, float) and pd.isna(val)):
+        if val is None:
+            return None
+        if isinstance(val, float) and pd.isna(val):
             return None
         try:
-            return pd.to_datetime(
-                str(val).strip(),
-                format='%Y-%m-%d %H:%M:%S',
-                dayfirst=False,
-            ).isoformat()
+            ts = pd.to_datetime(str(val).strip(), utc=True)
+            return ts.isoformat()
         except Exception:
-            try:
-                return pd.to_datetime(
-                    str(val).strip(),
-                    dayfirst=False,
-                    infer_datetime_format=True,
-                ).isoformat()
-            except Exception:
-                return None
+            return None
 
     @staticmethod
     def _parse_turn_id(val: Any, fallback: int) -> int:
         """
         Parse message_seq as int. Returns fallback (sequential counter)
-        if val is absent or non-numeric, per spec requirement 7.
+        if val is absent or non-numeric.
         """
         try:
             return int(str(val).strip())
@@ -445,3 +485,8 @@ if __name__ == "__main__":
         print(f"  date        : {s['session_date']}  lang={s['language_code']}")
         print(f"  detected    : {s['language_detected']}")
         print(f"  flagged     : {s['astrotalk_flagged']}")
+        if s['messages']:
+            m = s['messages'][0]
+            print(f"  first turn  : [{m['speaker']}] {m['message_text'][:60]}")
+            print(f"    timestamp : {m['timestamp']}")
+            print(f"    has_link  : {m['has_link']}")
