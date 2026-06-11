@@ -1,7 +1,7 @@
-const BASE_URL = '';
+const API_BASE = window.location.origin;
 
 async function request(path, options = {}) {
-  const res = await fetch(`${BASE_URL}${path}`, options);
+  const res = await fetch(`${API_BASE}${path}`, options);
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(`HTTP ${res.status}: ${text}`);
@@ -20,7 +20,7 @@ export function getReviewerStats() {
 }
 
 export async function getViolationStats() {
-  const res = await fetch('/stats/violations');
+  const res = await fetch(`${API_BASE}/stats/violations`);
   if (!res.ok) throw new Error('Failed to fetch violation stats');
   return res.json();
 }
@@ -82,5 +82,5 @@ export function saveSessionNote(sessionId, note, reviewerId) {
 // ── Export ─────────────────────────────────────────────────────────────────
 
 export function exportCsv() {
-  window.open(`${BASE_URL}/export/csv`, '_blank');
+  window.open(`${API_BASE}/export/csv`, '_blank');
 }

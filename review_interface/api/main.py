@@ -13,6 +13,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # Ensure project root is importable when running from any working directory
@@ -523,4 +524,19 @@ def export_csv():
             "Content-Disposition":
                 f"attachment; filename=gt_review_export_{date_str}.csv"
         },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Static file serving — React frontend build
+# Must be mounted AFTER all API routes so API paths take precedence.
+# Skipped silently if the build folder does not yet exist.
+# ---------------------------------------------------------------------------
+
+frontend_build = Path(__file__).parent.parent / "frontend" / "build"
+if frontend_build.exists():
+    app.mount(
+        "/",
+        StaticFiles(directory=str(frontend_build), html=True),
+        name="static",
     )
