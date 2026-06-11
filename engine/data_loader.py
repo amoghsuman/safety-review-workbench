@@ -215,16 +215,7 @@ class DataLoader:
             session_end   = max(valid_ts) if valid_ts else None
             # Derive session_date from earliest timestamp — not in CSV directly
             session_date  = session_start[:10] if session_start else None
-            if len(valid_ts) >= 2:
-                try:
-                    dt_min   = datetime.fromisoformat(min(valid_ts))
-                    dt_max   = datetime.fromisoformat(max(valid_ts))
-                    delta    = (dt_max - dt_min).total_seconds() / 60
-                    duration = round(delta, 1)
-                except Exception:
-                    duration = 0.0
-            else:
-                duration = 0.0
+            duration = self._calc_duration(session_start, session_end)
 
             # ── AstroTalk flag ─────────────────────────────────────────
             astrotalk_flagged = (
@@ -398,6 +389,19 @@ class DataLoader:
         try:
             ts = pd.to_datetime(str(val).strip(), utc=True)
             return ts.isoformat()
+        except Exception:
+            return None
+
+    def _calc_duration(self, start_str: str | None, end_str: str | None) -> float | None:
+        if not start_str or not end_str:
+            return None
+        try:
+            start = pd.to_datetime(start_str, utc=True)
+            end   = pd.to_datetime(end_str,   utc=True)
+            if end < start:
+                return None
+            delta = (end - start).total_seconds() / 60
+            return round(delta, 1)
         except Exception:
             return None
 

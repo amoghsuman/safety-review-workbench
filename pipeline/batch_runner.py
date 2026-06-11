@@ -301,6 +301,7 @@ def ingest_only(data_path: str) -> None:
         f"to_ingest={len(pending)}"
     )
 
+    analyser  = ConsultantAnalyser()
     n_written = 0
 
     try:
@@ -340,6 +341,23 @@ def ingest_only(data_path: str) -> None:
             ]
 
             write_session_complete(session_id, session_data, turns, [])
+
+            re_engage_flags = analyser.detect_post_session_messages(
+                session.get('messages', [])
+            )
+            if re_engage_flags:
+                from store.writer import write_flags
+                write_flags(session_id, re_engage_flags)
+                from store.db import get_connection
+                with get_connection() as conn:
+                    conn.execute(
+                        """UPDATE sessions
+                           SET overall_verdict = 'FLAGGED',
+                               confidence_score = 0.92
+                           WHERE session_id = ?
+                           AND overall_verdict = 'UNPROCESSED'""",
+                        (session_id,),
+                    )
 
             processed_ids.add(session_id)
             n_written += 1

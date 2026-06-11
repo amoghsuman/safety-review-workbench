@@ -36,8 +36,17 @@ function SessionTypePill({ stype }) {
 // Feature 7 — Reviewer progress table columns
 const PROGRESS_COLS = ['Reviewer', 'Reviewed', 'Confirmed', 'False Pos.', 'Escalated', 'Cleared'];
 
-// Session table columns (Feature 3: Astrologer removed, Session Type added)
-const COLS = ['Session ID', 'Verdict', 'Flags', 'Language', 'Type', 'Duration', 'Status', 'Action'];
+// Session table columns
+const COLS = ['Session ID', 'Verdict', 'Flags', 'LLM Flags', 'Manual Flags', 'Language', 'Type', 'Duration', 'Status', 'Action'];
+
+// Column keys used for client-side sorting
+const SORT_KEYS = {
+  'Session ID':   'session_id',
+  'Duration':     'duration_minutes',
+  'Flags':        'flag_count',
+  'LLM Flags':    'llm_flag_count',
+  'Manual Flags': 'manual_flag_count',
+};
 
 // ---------------------------------------------------------------------------
 // Component
@@ -70,6 +79,18 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
   const [showHeatmap,     setShowHeatmap]     = useState(false);
   const [heatmapData,     setHeatmapData]     = useState([]);
   const [loadingHeatmap,  setLoadingHeatmap]  = useState(false);
+
+  // ── Column filter state ────────────────────────────────────────────────
+  const [colFilterId,     setColFilterId]     = useState('');
+  const [colFilterLang,   setColFilterLang]   = useState('');
+  const [colFilterType,   setColFilterType]   = useState('');
+  const [colFilterMinDur, setColFilterMinDur] = useState('');
+  const [colFilterMaxDur, setColFilterMaxDur] = useState('');
+  const [focusedFilter,   setFocusedFilter]   = useState(null);
+
+  // ── Sort state ─────────────────────────────────────────────────────────
+  const [sortCol,         setSortCol]         = useState(null);
+  const [sortDir,         setSortDir]         = useState(null);
 
   // ── Data fetching ──────────────────────────────────────────────────────
 
@@ -115,10 +136,31 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
     { label: 'Pending review', value: pending,       color: C.accent      },
   ];
 
-  // Client-side filters applied on top of server-filtered list
-  const displayedSessions = sessions
-    .filter((s) => !searchQuery.trim() || s.session_id.includes(searchQuery.trim()))
-    .filter((s) => minConfidence === 0 || ((s.confidence_score ?? 0) * 100 >= minConfidence));
+  const handleSortClick = (colLabel) => {
+    const key = SORT_KEYS[colLabel];
+    if (!key) return;
+    if (sortCol !== key)       { setSortCol(key); setSortDir('asc'); }
+    else if (sortDir === 'asc') { setSortDir('desc'); }
+    else                        { setSortCol(null); setSortDir(null); }
+  };
+
+  // Client-side filters (column filters AND-ed with top-bar filters) + optional sort
+  let displayedSessions = sessions
+    .filter((s) => !searchQuery.trim()    || s.session_id.includes(searchQuery.trim()))
+    .filter((s) => minConfidence === 0    || ((s.confidence_score ?? 0) * 100 >= minConfidence))
+    .filter((s) => !colFilterId.trim()    || s.session_id.includes(colFilterId.trim()))
+    .filter((s) => !colFilterLang.trim()  || (s.language_detected || '').toLowerCase().includes(colFilterLang.trim().toLowerCase()))
+    .filter((s) => !colFilterType         || s.session_type === colFilterType)
+    .filter((s) => !colFilterMinDur       || (s.duration_minutes ?? 0) >= Number(colFilterMinDur))
+    .filter((s) => !colFilterMaxDur       || (s.duration_minutes ?? 0) <= Number(colFilterMaxDur));
+  if (sortCol && sortDir) {
+    displayedSessions = [...displayedSessions].sort((a, b) => {
+      const va = a[sortCol] ?? -Infinity;
+      const vb = b[sortCol] ?? -Infinity;
+      const cmp = va < vb ? -1 : va > vb ? 1 : 0;
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+  }
 
   const noResults     = displayedSessions.length === 0;
   const emptyMessage  = sessions.length === 0
@@ -211,6 +253,12 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
   });
 
   const tdMono = (last) => ({ ...td(last), fontFamily: MONO, fontSize: 12, color: C.textSecondary });
+
+  const filterInputSt = (name) => ({
+    width: '100%', fontSize: 11,
+    border: `1px solid ${focusedFilter === name ? '#0F6E56' : '#E2DED8'}`,
+    borderRadius: 3, padding: '4px 6px', background: 'white', outline: 'none',
+  });
 
   // ── Render ─────────────────────────────────────────────────────────────
 
@@ -470,14 +518,70 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
           <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', background: C.bgSurface }}>
               <thead>
+                {/* Header row — sortable columns show ↑/↓ indicator */}
                 <tr style={{ background: C.bgStatsrow, borderBottom: `1px solid ${C.border}` }}>
-                  {COLS.map((h) => <th key={h} style={th}>{h}</th>)}
+                  {COLS.map((h) => {
+                    const key      = SORT_KEYS[h];
+                    const isActive = key && sortCol === key;
+                    return (
+                      <th key={h} onClick={() => key && handleSortClick(h)}
+                        style={{ ...th, cursor: key ? 'pointer' : 'default', userSelect: 'none' }}>
+                        {h}
+                        {isActive && (
+                          <span style={{ marginLeft: 4, fontSize: 10, color: '#0F6E56' }}>
+                            {sortDir === 'asc' ? '↑' : '↓'}
+                          </span>
+                        )}
+                      </th>
+                    );
+                  })}
+                </tr>
+                {/* Column filter row */}
+                <tr style={{ background: '#FAFAF8', borderBottom: '1px solid #E2DED8' }}>
+                  <th style={{ padding: '4px 8px', fontWeight: 'normal' }}>
+                    <input type="text" placeholder="Filter ID..."
+                      value={colFilterId} onChange={(e) => setColFilterId(e.target.value)}
+                      onFocus={() => setFocusedFilter('id')} onBlur={() => setFocusedFilter(null)}
+                      style={filterInputSt('id')} />
+                  </th>
+                  <th style={{ padding: '4px 8px' }} />
+                  <th style={{ padding: '4px 8px' }} />
+                  <th style={{ padding: '4px 8px' }} />
+                  <th style={{ padding: '4px 8px' }} />
+                  <th style={{ padding: '4px 8px', fontWeight: 'normal' }}>
+                    <input type="text" placeholder="Filter lang..."
+                      value={colFilterLang} onChange={(e) => setColFilterLang(e.target.value)}
+                      onFocus={() => setFocusedFilter('lang')} onBlur={() => setFocusedFilter(null)}
+                      style={filterInputSt('lang')} />
+                  </th>
+                  <th style={{ padding: '4px 8px', fontWeight: 'normal' }}>
+                    <select value={colFilterType} onChange={(e) => setColFilterType(e.target.value)}
+                      style={filterInputSt('type')}>
+                      <option value="">All</option>
+                      <option value="chat">Chat</option>
+                      <option value="voice">Voice</option>
+                    </select>
+                  </th>
+                  <th style={{ padding: '4px 8px', fontWeight: 'normal' }}>
+                    <div style={{ display: 'flex', gap: 3 }}>
+                      <input type="number" placeholder="Min"
+                        value={colFilterMinDur} onChange={(e) => setColFilterMinDur(e.target.value)}
+                        onFocus={() => setFocusedFilter('durMin')} onBlur={() => setFocusedFilter(null)}
+                        style={{ ...filterInputSt('durMin'), width: '50%' }} />
+                      <input type="number" placeholder="Max"
+                        value={colFilterMaxDur} onChange={(e) => setColFilterMaxDur(e.target.value)}
+                        onFocus={() => setFocusedFilter('durMax')} onBlur={() => setFocusedFilter(null)}
+                        style={{ ...filterInputSt('durMax'), width: '50%' }} />
+                    </div>
+                  </th>
+                  <th style={{ padding: '4px 8px' }} />
+                  <th style={{ padding: '4px 8px' }} />
                 </tr>
               </thead>
               <tbody>
                 {displayedSessions.map((s, idx) => {
-                  const isLast    = idx === displayedSessions.length - 1;
-                  const isHovered = hoveredRow === s.session_id;
+                  const isLast     = idx === displayedSessions.length - 1;
+                  const isHovered  = hoveredRow === s.session_id;
                   const isClearing = clearingSession === s.session_id;
                   return (
                     <tr
@@ -491,8 +595,9 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
 
                       <td style={td(isLast)}><VerdictBadge verdict={s.overall_verdict} /></td>
 
+                      {/* Total flags (excludes DISMISSED) */}
                       <td style={td(isLast)}>
-                        {s.flag_count > 0 ? (
+                        {(s.flag_count ?? 0) > 0 ? (
                           <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                             <span style={{
                               width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
@@ -501,33 +606,70 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                             }} />
                             <span style={{ fontFamily: MONO, fontSize: 12 }}>{s.flag_count}</span>
                           </span>
-                        ) : (
-                          <span style={{ color: C.textMuted }}>—</span>
-                        )}
+                        ) : <span style={{ color: C.textMuted }}>—</span>}
                       </td>
 
-                      {/* Feature 3: Language */}
+                      {/* LLM + REGEX flags */}
+                      <td style={td(isLast)}>
+                        {(s.llm_flag_count ?? 0) > 0 ? (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{
+                              width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                              background: s.overall_verdict === 'SEVERE' ? C.severeText
+                                : s.overall_verdict === 'FLAGGED' ? C.flaggedText : C.cleanText,
+                            }} />
+                            <span style={{ fontFamily: MONO, fontSize: 12 }}>{s.llm_flag_count}</span>
+                          </span>
+                        ) : <span style={{ color: C.textMuted }}>—</span>}
+                      </td>
+
+                      {/* Manual flags */}
+                      <td style={td(isLast)}>
+                        {(s.manual_flag_count ?? 0) > 0 ? (
+                          <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                            <span style={{
+                              width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                              background: '#7F77DD',
+                            }} />
+                            <span style={{ fontFamily: MONO, fontSize: 12 }}>{s.manual_flag_count}</span>
+                          </span>
+                        ) : <span style={{ color: C.textMuted }}>—</span>}
+                      </td>
+
                       <td style={td(isLast)}>
                         <span style={{ textTransform: 'capitalize', fontSize: 13 }}>
                           {s.language_detected || '—'}
                         </span>
                       </td>
 
-                      {/* Feature 3: Session Type (replaces Astrologer) */}
                       <td style={td(isLast)}>
                         <SessionTypePill stype={s.session_type} />
                       </td>
 
                       <td style={tdMono(isLast)}>
-                        {s.duration_minutes != null ? `${Math.round(s.duration_minutes)} min` : '—'}
+                        <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap' }}>
+                          {s.duration_minutes != null ? `${Math.round(s.duration_minutes)} min` : '—'}
+                          {s.duration_minutes > 1440 && (
+                            <span style={{
+                              marginLeft: 6,
+                              fontSize: 10,
+                              fontFamily: 'DM Mono',
+                              background: '#FAEEDA',
+                              color: '#633806',
+                              border: '1px solid #FAC775',
+                              borderRadius: 3,
+                              padding: '1px 6px',
+                            }}>
+                              multi-day
+                            </span>
+                          )}
+                        </span>
                       </td>
 
                       <td style={td(isLast)}><StatusBadge status={s.review_status} /></td>
 
-                      {/* Feature 4: Action column with Clear + Review buttons */}
                       <td style={td(isLast)}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          {/* Quick-clear — only for PENDING sessions */}
                           {s.review_status === 'PENDING' && (
                             <button
                               disabled={!!clearingSession}
@@ -543,7 +685,6 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                               {isClearing ? '…' : '✓ Clear'}
                             </button>
                           )}
-
                           <button
                             className="review-btn"
                             onClick={() => onSelectSession(s.session_id, sessions)}

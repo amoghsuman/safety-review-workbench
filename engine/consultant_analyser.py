@@ -341,6 +341,54 @@ class ConsultantAnalyser:
             "total_sessions": len(profiles),
         }
 
+    def detect_post_session_messages(self, turns: list) -> list:
+        """
+        Detects re-engagement solicitation: ASTROLOGER messages sent after
+        a session-end automated message.
+
+        Expects DataLoader-format turns (keys: speaker, is_automated,
+        message_text, turn_id) — not the old role/message format used by
+        analyse(). Called from ingest_only() in batch_runner.py.
+        """
+        session_end_keywords = [
+            'chat ended', 'low balance', 'recharge', 'automated message',
+            'session ended', 'contact customer', 'end due to', 'wallet',
+        ]
+
+        last_auto_idx = -1
+        for i, turn in enumerate(turns):
+            if turn.get('is_automated') == 1:
+                text = str(turn.get('message_text', '')).lower()
+                if any(kw in text for kw in session_end_keywords):
+                    last_auto_idx = i
+
+        if last_auto_idx == -1:
+            return []
+
+        post_session_turns = [
+            t for i, t in enumerate(turns)
+            if i > last_auto_idx
+            and t.get('speaker') == 'ASTROLOGER'
+            and t.get('is_automated') != 1
+        ]
+
+        if not post_session_turns:
+            return []
+
+        return [{
+            'category_code':       'RE_ENGAGEMENT_SOLICITATION',
+            'detection_layer':     'REGEX',
+            'severity':            'HIGH',
+            'confidence_score':    0.92,
+            'reasoning':           (
+                f'Astrologer sent {len(post_session_turns)} message(s) after '
+                'session-end automated message — likely re-engagement attempt'
+            ),
+            'false_positive_risk': 'LOW',
+            'pattern_matched':     post_session_turns[0].get('message_text', '')[:100],
+            'turn_id':             post_session_turns[0].get('turn_id'),
+        }]
+
     # ------------------------------------------------------------------
     # Private — flag detection
     # ------------------------------------------------------------------

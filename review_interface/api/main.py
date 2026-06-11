@@ -217,19 +217,31 @@ def sessions(
         language_filter=language,
     )
 
-    # Enrich each row with flag count (single aggregation query)
+    # Enrich each row with flag counts (total, LLM/REGEX, manual) — excludes DISMISSED
     try:
         with get_connection() as conn:
-            flag_counts = dict(
-                conn.execute(
-                    "SELECT session_id, COUNT(*) FROM flags GROUP BY session_id"
-                ).fetchall()
-            )
+            flag_data = {}
+            for r in conn.execute("""
+                SELECT
+                    session_id,
+                    COUNT(*) AS flag_count,
+                    SUM(CASE WHEN detection_layer IN ('LLM','REGEX') THEN 1 ELSE 0 END) AS llm_flag_count,
+                    SUM(CASE WHEN detection_layer = 'MANUAL' THEN 1 ELSE 0 END) AS manual_flag_count
+                FROM flags
+                WHERE detection_layer NOT IN ('DISMISSED')
+                GROUP BY session_id
+            """).fetchall():
+                flag_data[r["session_id"]] = dict(r)
         for row in rows:
-            row["flag_count"] = flag_counts.get(row["session_id"], 0)
+            fd = flag_data.get(row["session_id"], {})
+            row["flag_count"]        = fd.get("flag_count",        0)
+            row["llm_flag_count"]    = fd.get("llm_flag_count",    0)
+            row["manual_flag_count"] = fd.get("manual_flag_count", 0)
     except Exception:
         for row in rows:
-            row["flag_count"] = None
+            row["flag_count"]        = None
+            row["llm_flag_count"]    = None
+            row["manual_flag_count"] = None
 
     return rows
 
@@ -387,10 +399,17 @@ def amend_flag(flag_id: int, body: AmendFlagRequest):
     try:
         with conn:
             original = conn.execute(
-                "SELECT session_id, turn_id FROM flags WHERE flag_id = ?", (flag_id,)
+                "SELECT session_id, turn_id, category_code, pattern_matched FROM flags WHERE flag_id = ?", (flag_id,)
             ).fetchone()
             if original is None:
                 raise HTTPException(status_code=404, detail=f"Flag {flag_id} not found")
+            existing = conn.execute(
+                """SELECT flag_id FROM flags
+                   WHERE session_id = ? AND category_code = ? AND detection_layer = 'AMENDED'""",
+                (original["session_id"], original["category_code"]),
+            ).fetchone()
+            if existing:
+                return {"success": True, "message": "Already amended"}
             cur = conn.execute(
                 """
                 INSERT INTO flags
@@ -404,7 +423,7 @@ def amend_flag(flag_id: int, body: AmendFlagRequest):
                     body.category_code,
                     body.severity,
                     body.reasoning,
-                    f"Amended by reviewer: {body.reviewer_id}",
+                    original["pattern_matched"] if original["pattern_matched"] else f"Amended by {body.reviewer_id}",
                 ),
             )
         return {"success": True, "new_flag_id": cur.lastrowid}
@@ -422,11 +441,18 @@ def dismiss_flag(flag_id: int, body: DismissFlagRequest):
     try:
         with conn:
             original = conn.execute(
-                "SELECT session_id, turn_id, category_code FROM flags WHERE flag_id = ?",
+                "SELECT session_id, turn_id, category_code, pattern_matched FROM flags WHERE flag_id = ?",
                 (flag_id,),
             ).fetchone()
             if original is None:
                 raise HTTPException(status_code=404, detail=f"Flag {flag_id} not found")
+            existing = conn.execute(
+                """SELECT flag_id FROM flags
+                   WHERE session_id = ? AND category_code = ? AND detection_layer = 'DISMISSED'""",
+                (original["session_id"], original["category_code"]),
+            ).fetchone()
+            if existing:
+                return {"success": True, "message": "Already dismissed"}
             conn.execute(
                 """
                 INSERT INTO flags
@@ -437,9 +463,9 @@ def dismiss_flag(flag_id: int, body: DismissFlagRequest):
                 (
                     original["session_id"],
                     original["turn_id"],
-                    original["category_code"] + "_DISMISSED",
+                    original["category_code"],
                     f"Dismissed by reviewer: {body.note}",
-                    f"Dismissed by reviewer: {body.reviewer_id}",
+                    original["pattern_matched"] if original["pattern_matched"] else f"Dismissed by {body.reviewer_id}",
                 ),
             )
             conn.execute(
