@@ -33,16 +33,24 @@ function SessionTypePill({ stype }) {
   );
 }
 
+function formatDuration(minutes) {
+  if (!minutes && minutes !== 0) return '—';
+  if (minutes < 60)   return `${Math.round(minutes)} min`;
+  if (minutes < 1440) return `${(minutes / 60).toFixed(1)} hrs`;
+  return `${(minutes / 1440).toFixed(1)} days`;
+}
+
 // Feature 7 — Reviewer progress table columns
 const PROGRESS_COLS = ['Reviewer', 'Reviewed', 'Confirmed', 'False Pos.', 'Escalated', 'Cleared'];
 
 // Session table columns
-const COLS = ['Session ID', 'Verdict', 'Flags', 'LLM Flags', 'Manual Flags', 'Language', 'Type', 'Duration', 'Status', 'Action'];
+const COLS = ['Session ID', 'Verdict', 'Flags', 'LLM Flags', 'Manual Flags', 'Language', 'Type', 'Duration', 'Turns', 'Status', 'Action'];
 
 // Column keys used for client-side sorting
 const SORT_KEYS = {
   'Session ID':   'session_id',
   'Duration':     'duration_minutes',
+  'Turns':        'turn_count',
   'Flags':        'flag_count',
   'LLM Flags':    'llm_flag_count',
   'Manual Flags': 'manual_flag_count',
@@ -84,9 +92,11 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
   const [colFilterId,     setColFilterId]     = useState('');
   const [colFilterLang,   setColFilterLang]   = useState('');
   const [colFilterType,   setColFilterType]   = useState('');
-  const [colFilterMinDur, setColFilterMinDur] = useState('');
-  const [colFilterMaxDur, setColFilterMaxDur] = useState('');
-  const [focusedFilter,   setFocusedFilter]   = useState(null);
+  const [colFilterMinDur,   setColFilterMinDur]   = useState('');
+  const [colFilterMaxDur,   setColFilterMaxDur]   = useState('');
+  const [colFilterMinTurns, setColFilterMinTurns] = useState('');
+  const [colFilterMaxTurns, setColFilterMaxTurns] = useState('');
+  const [focusedFilter,     setFocusedFilter]     = useState(null);
 
   // ── Sort state ─────────────────────────────────────────────────────────
   const [sortCol,         setSortCol]         = useState(null);
@@ -151,8 +161,10 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
     .filter((s) => !colFilterId.trim()    || s.session_id.includes(colFilterId.trim()))
     .filter((s) => !colFilterLang.trim()  || (s.language_detected || '').toLowerCase().includes(colFilterLang.trim().toLowerCase()))
     .filter((s) => !colFilterType         || s.session_type === colFilterType)
-    .filter((s) => !colFilterMinDur       || (s.duration_minutes ?? 0) >= Number(colFilterMinDur))
-    .filter((s) => !colFilterMaxDur       || (s.duration_minutes ?? 0) <= Number(colFilterMaxDur));
+    .filter((s) => !colFilterMinDur         || (s.duration_minutes ?? 0) >= Number(colFilterMinDur))
+    .filter((s) => !colFilterMaxDur         || (s.duration_minutes ?? 0) <= Number(colFilterMaxDur))
+    .filter((s) => !colFilterMinTurns       || (s.turn_count ?? 0) >= Number(colFilterMinTurns))
+    .filter((s) => !colFilterMaxTurns       || (s.turn_count ?? 0) <= Number(colFilterMaxTurns));
   if (sortCol && sortDir) {
     displayedSessions = [...displayedSessions].sort((a, b) => {
       const va = a[sortCol] ?? -Infinity;
@@ -503,17 +515,6 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
             padding: '60px 0', gap: 12, color: C.textSecondary, fontSize: 14 }}>
             <LoadingSpinner /> Loading sessions…
           </div>
-        ) : noResults ? (
-          <div style={{ textAlign: 'center', padding: '60px 0' }}>
-            <div style={{ fontSize: 13, color: C.textSecondary }}>{emptyMessage}</div>
-            {showClearLink && (
-              <button className="btn-link-accent" onClick={clearFilters}
-                style={{ display: 'block', margin: '10px auto 0', fontSize: 13,
-                  color: C.accent, background: 'none', border: 'none', cursor: 'pointer' }}>
-                Clear filters
-              </button>
-            )}
-          </div>
         ) : (
           <div style={{ border: `1px solid ${C.border}`, borderRadius: 6, overflow: 'hidden' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', background: C.bgSurface }}>
@@ -574,12 +575,24 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                         style={{ ...filterInputSt('durMax'), width: '50%' }} />
                     </div>
                   </th>
+                  <th style={{ padding: '4px 8px', fontWeight: 'normal' }}>
+                    <div style={{ display: 'flex', gap: 3 }}>
+                      <input type="number" placeholder="Min"
+                        value={colFilterMinTurns} onChange={(e) => setColFilterMinTurns(e.target.value)}
+                        onFocus={() => setFocusedFilter('turnsMin')} onBlur={() => setFocusedFilter(null)}
+                        style={{ ...filterInputSt('turnsMin'), width: '50%' }} />
+                      <input type="number" placeholder="Max"
+                        value={colFilterMaxTurns} onChange={(e) => setColFilterMaxTurns(e.target.value)}
+                        onFocus={() => setFocusedFilter('turnsMax')} onBlur={() => setFocusedFilter(null)}
+                        style={{ ...filterInputSt('turnsMax'), width: '50%' }} />
+                    </div>
+                  </th>
                   <th style={{ padding: '4px 8px' }} />
                   <th style={{ padding: '4px 8px' }} />
                 </tr>
               </thead>
               <tbody>
-                {displayedSessions.map((s, idx) => {
+                {displayedSessions.length > 0 ? displayedSessions.map((s, idx) => {
                   const isLast     = idx === displayedSessions.length - 1;
                   const isHovered  = hoveredRow === s.session_id;
                   const isClearing = clearingSession === s.session_id;
@@ -648,7 +661,7 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
 
                       <td style={tdMono(isLast)}>
                         <span style={{ display: 'flex', alignItems: 'center', flexWrap: 'nowrap' }}>
-                          {s.duration_minutes != null ? `${Math.round(s.duration_minutes)} min` : '—'}
+                          {formatDuration(s.duration_minutes)}
                           {s.duration_minutes > 1440 && (
                             <span style={{
                               marginLeft: 6,
@@ -664,6 +677,12 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                             </span>
                           )}
                         </span>
+                      </td>
+
+                      <td style={tdMono(isLast)}>
+                        {(s.turn_count ?? 0) > 0
+                          ? <span style={{ fontSize: 12, color: '#6B6860' }}>{s.turn_count}</span>
+                          : <span style={{ color: C.textMuted }}>—</span>}
                       </td>
 
                       <td style={td(isLast)}><StatusBadge status={s.review_status} /></td>
@@ -700,7 +719,34 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                       </td>
                     </tr>
                   );
-                })}
+                }) : (
+                  <tr>
+                    <td colSpan={COLS.length} style={{ textAlign: 'center', padding: '40px 0' }}>
+                      <div style={{ fontSize: 13, color: '#6B6860' }}>
+                        No sessions match the selected filters.
+                      </div>
+                      <span
+                        onClick={() => {
+                          setSearchQuery('');
+                          setMinConfidence(0);
+                          setVerdictFilter('');
+                          setStatusFilter('');
+                          setColFilterId('');
+                          setColFilterLang('');
+                          setColFilterType('');
+                          setColFilterMinDur('');
+                          setColFilterMaxDur('');
+                          setColFilterMinTurns('');
+                          setColFilterMaxTurns('');
+                        }}
+                        style={{ fontSize: 12, color: '#0F6E56', cursor: 'pointer',
+                          display: 'inline-block', marginTop: 10 }}
+                      >
+                        Clear filters
+                      </span>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

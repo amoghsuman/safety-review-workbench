@@ -218,6 +218,7 @@ def sessions(
     )
 
     # Enrich each row with flag counts (total, LLM/REGEX, manual) — excludes DISMISSED
+    # and with turn_count from the turns table.
     try:
         with get_connection() as conn:
             flag_data = {}
@@ -232,16 +233,27 @@ def sessions(
                 GROUP BY session_id
             """).fetchall():
                 flag_data[r["session_id"]] = dict(r)
+
+            turn_data = {}
+            for r in conn.execute("""
+                SELECT session_id, COUNT(*) AS turn_count
+                FROM turns
+                GROUP BY session_id
+            """).fetchall():
+                turn_data[r["session_id"]] = r["turn_count"]
+
         for row in rows:
             fd = flag_data.get(row["session_id"], {})
             row["flag_count"]        = fd.get("flag_count",        0)
             row["llm_flag_count"]    = fd.get("llm_flag_count",    0)
             row["manual_flag_count"] = fd.get("manual_flag_count", 0)
+            row["turn_count"]        = turn_data.get(row["session_id"], 0)
     except Exception:
         for row in rows:
             row["flag_count"]        = None
             row["llm_flag_count"]    = None
             row["manual_flag_count"] = None
+            row["turn_count"]        = None
 
     return rows
 
