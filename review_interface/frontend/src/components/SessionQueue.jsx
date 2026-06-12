@@ -44,7 +44,7 @@ function formatDuration(minutes) {
 const PROGRESS_COLS = ['Reviewer', 'Reviewed', 'Confirmed', 'False Pos.', 'Escalated', 'Cleared'];
 
 // Session table columns
-const COLS = ['Session ID', 'Verdict', 'Flags', 'LLM Flags', 'Manual Flags', 'Language', 'Type', 'Duration', 'Turns', 'Status', 'Action'];
+const COLS = ['Session ID', 'Verdict', 'Flags', 'LLM Flags', 'Manual Flags', 'Language', 'Type', 'Duration', 'Turns', 'Status', 'Reviewer', 'Action'];
 
 // Column keys used for client-side sorting
 const SORT_KEYS = {
@@ -60,7 +60,7 @@ const SORT_KEYS = {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function SessionQueue({ reviewerName, onSelectSession }) {
+export default function SessionQueue({ reviewerName, reviewerRole, onSelectSession }) {
   // ── Server-side filtered state ─────────────────────────────────────────
   const [sessions,      setSessions]      = useState([]);
   const [stats,         setStats]         = useState(null);
@@ -604,6 +604,7 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                   </th>
                   <th style={{ padding: '4px 8px' }} />
                   <th style={{ padding: '4px 8px' }} />
+                  <th style={{ padding: '4px 8px' }} />
                 </tr>
               </thead>
               <tbody>
@@ -704,6 +705,12 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                       </td>
 
                       <td style={td(isLast)}><StatusBadge status={s.review_status} /></td>
+
+                      <td style={td(isLast)}>
+                        {s.reviewer_id && s.review_status !== 'PENDING'
+                          ? <span style={{ fontSize: 12, color: '#1C1C1A' }}>{truncate(s.reviewer_id, 15)}</span>
+                          : <span style={{ color: '#9B9890' }}>—</span>}
+                      </td>
 
                       <td style={td(isLast)}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

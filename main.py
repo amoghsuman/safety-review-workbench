@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import time
+import glob
 from datetime import datetime
 from pathlib import Path
 
@@ -190,8 +191,7 @@ def compute_final_stats(outputs_dir: str) -> dict:
     Compute summary stats from ALL result files in outputs/.
     Used at the end of run_pipeline() so --resume runs show complete totals.
     """
-    import glob
-
+    
     all_results = []
     for f in glob.glob(f"{outputs_dir}/*_result.json"):
         try:

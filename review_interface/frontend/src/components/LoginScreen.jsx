@@ -4,6 +4,15 @@ import TopBar from './TopBar';
 import Footer from './Footer';
 import { getStats } from '../api';
 
+const REVIEWERS = [
+  { name: 'Gaurav',   role: 'L1' },
+  { name: 'Yusuf',    role: 'L1' },
+  { name: 'Nikhil',   role: 'L1' },
+  { name: 'Divyansh', role: 'L1' },
+  { name: 'Vineet',   role: 'L1' },
+  { name: 'Amogh',    role: 'L2' },
+];
+
 export default function LoginScreen({ onLogin }) {
   const [name,     setName]     = useState('');
   const [focused,  setFocused]  = useState(false);
@@ -14,11 +23,14 @@ export default function LoginScreen({ onLogin }) {
     getStats().then(setStats).catch(() => {});
   }, []);
 
-  const disabled = !name.trim();
+  const disabled = !name;
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    if (!disabled) onLogin(name.trim());
+    if (!disabled) {
+      const reviewer = REVIEWERS.find((r) => r.name === name);
+      onLogin(name, reviewer?.role || 'L1');
+    }
   };
 
   // Explicit numeric defaults so cells always show 0 rather than "—"
@@ -114,12 +126,9 @@ export default function LoginScreen({ onLogin }) {
               Reviewer Name
             </div>
 
-            {/* Input */}
-            <input
-              type="text"
+            {/* Dropdown */}
+            <select
               autoFocus
-              autoComplete="off"
-              placeholder="e.g. Amogh Suman"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onFocus={() => setFocused(true)}
@@ -131,10 +140,16 @@ export default function LoginScreen({ onLogin }) {
                 borderRadius: 5,
                 border: `1px solid ${focused ? C.accent : C.border}`,
                 background: focused ? C.bgSurface : C.bgMuted,
-                color: C.textPrimary,
+                color: name ? C.textPrimary : C.textSecondary,
                 transition: 'border-color 150ms, background 150ms',
+                cursor: 'pointer',
               }}
-            />
+            >
+              <option value="" disabled>Select your name…</option>
+              {REVIEWERS.map((r) => (
+                <option key={r.name} value={r.name}>{r.name}</option>
+              ))}
+            </select>
 
             {/* Stats strip */}
             <div style={{

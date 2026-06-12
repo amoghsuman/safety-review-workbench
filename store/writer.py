@@ -101,8 +101,9 @@ def write_session_complete(
             conn.executemany(
                 """
                 INSERT OR REPLACE INTO turns
-                    (session_id, turn_id, speaker, message_text, timestamp, language_detected)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (session_id, turn_id, speaker, message_text, timestamp,
+                     language_detected, is_automated, has_link)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -112,6 +113,8 @@ def write_session_complete(
                         t["message_text"],
                         t.get("timestamp"),
                         t.get("language_detected"),
+                        t.get("is_automated", 0),
+                        t.get("has_link", 0),
                     )
                     for t in turns
                 ],

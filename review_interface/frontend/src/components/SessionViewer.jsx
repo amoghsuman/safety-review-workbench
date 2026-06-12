@@ -646,11 +646,11 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
                       padding: '10px 14px',
                       borderRadius: isAstrologer ? '0 8px 8px 8px' : '8px 0 8px 8px',
                       fontSize: 13, lineHeight: 1.6,
-                      background: isAstrologer ? '#F1F5F9' : '#EFF6FF',
-                      color: C.textPrimary,
-                      borderLeft: turnFlags.length > 0 ? `3px solid ${flagColor}` : undefined,
+                      background: turnFlags.length > 0 ? '#FCEBEB' : (isAstrologer ? '#F1F5F9' : '#EFF6FF'),
+                      color: turnFlags.length > 0 ? '#791F1F' : C.textPrimary,
+                      border: turnFlags.length > 0 ? '1px solid #F7C1C1' : undefined,
                       wordBreak: 'break-word', flex: 1,
-                      boxShadow: highlightedTurnIdx === idx ? '0 0 0 3px #0F6E56' : undefined,
+                      boxShadow: highlightedTurnIdx === idx ? '0 0 0 3px #F0C419' : undefined,
                       transition: 'box-shadow 0.4s ease-out',
                     }}>
                       {turn.message_text || '(empty)'}

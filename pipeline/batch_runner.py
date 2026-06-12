@@ -157,6 +157,20 @@ def _build_flags(classification, profile) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# DB helpers
+# ---------------------------------------------------------------------------
+
+def _get_unprocessed_session_ids() -> set[str]:
+    """Returns session_ids from the DB where overall_verdict = 'UNPROCESSED'."""
+    from store.db import get_connection
+    with get_connection() as conn:
+        cursor = conn.execute(
+            "SELECT session_id FROM sessions WHERE overall_verdict = 'UNPROCESSED'"
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+# ---------------------------------------------------------------------------
 # Public pipeline functions
 # ---------------------------------------------------------------------------
 
@@ -225,17 +239,25 @@ def run_batch(data_path: str, fresh_run: bool = False, limit: int = None) -> Non
     loader   = DataLoader(data_path)
     sessions = loader.load_sessions()
 
-    processed_ids = load_checkpoint()
-    pending       = [s for s in sessions if str(s.get("session_id")) not in processed_ids]
+    processed_ids  = load_checkpoint()
+    db_unprocessed = _get_unprocessed_session_ids()
+
+    if db_unprocessed:
+        pending = [s for s in sessions if str(s.get("session_id")) in db_unprocessed]
+        print(f"  DB-based pending: {len(pending)} sessions with overall_verdict='UNPROCESSED'")
+    else:
+        pending = [s for s in sessions if str(s.get("session_id")) not in processed_ids]
+        logger.info(
+            "No UNPROCESSED sessions in DB — falling back to checkpoint "
+            "(total=%d  already_done=%d  to_process=%d)",
+            len(sessions), len(processed_ids), len(pending),
+        )
 
     if limit is not None:
         pending = pending[:limit]
         print(f"  --limit applied: processing {len(pending)} of {len(sessions)} total sessions")
 
-    logger.info(
-        "Sessions: total=%d  already_done=%d  to_process=%d",
-        len(sessions), len(processed_ids), len(pending),
-    )
+    logger.info("Sessions to process: %d", len(pending))
 
     # Instantiate engine objects once — avoids repeated API key checks and
     # handler setup on LLMClassifier for each session.

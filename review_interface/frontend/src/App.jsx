@@ -5,12 +5,20 @@ import SessionViewer from './components/SessionViewer';
 
 export default function App() {
   const [reviewerName,     setReviewerName]     = useState('');
+  const [reviewerRole,     setReviewerRole]     = useState('');
   const [currentScreen,    setCurrentScreen]    = useState('queue');
   const [selectedSessionId,setSelectedSessionId]= useState(null);
   const [sessionList,      setSessionList]      = useState([]);
 
   if (!reviewerName) {
-    return <LoginScreen onLogin={setReviewerName} />;
+    return (
+      <LoginScreen
+        onLogin={(name, role) => {
+          setReviewerName(name);
+          setReviewerRole(role);
+        }}
+      />
+    );
   }
 
   if (currentScreen === 'session') {
@@ -19,6 +27,7 @@ export default function App() {
         sessionId={selectedSessionId}
         sessionList={sessionList}
         reviewerName={reviewerName}
+        reviewerRole={reviewerRole}
         onBack={() => {
           setCurrentScreen('queue');
           setSelectedSessionId(null);
@@ -31,6 +40,7 @@ export default function App() {
   return (
     <SessionQueue
       reviewerName={reviewerName}
+      reviewerRole={reviewerRole}
       onSelectSession={(id, list) => {
         setSelectedSessionId(id);
         setSessionList(list || []);
