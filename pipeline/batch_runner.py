@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import os
 import time
-from datetime import datetime
 from pathlib import Path
 
 from engine.data_loader          import DataLoader
@@ -63,46 +62,64 @@ _FP_RISK: dict[str, str] = {
 # Internal helpers — build store-compatible dicts from engine outputs
 # ---------------------------------------------------------------------------
 
-def _build_session_data(session: dict, result, classification) -> dict:
-    messages  = session.get("messages", [])
-    t_start   = messages[0].get("timestamp")  if messages else None
-    t_end     = messages[-1].get("timestamp") if messages else None
-    duration_m = None
-    if t_start and t_end:
-        try:
-            dt1 = datetime.fromisoformat(t_start.replace("Z", "+00:00"))
-            dt2 = datetime.fromisoformat(t_end.replace("Z",   "+00:00"))
-            duration_m = round(abs((dt2 - dt1).total_seconds()) / 60, 2)
-        except (ValueError, AttributeError):
-            pass
-
+def _to_legacy_session(session: dict) -> dict:
+    """Convert new DataLoader session dict to the legacy shape expected by
+    ConsultantAnalyser and LLMClassifier (role/message/timestamp keys)."""
+    legacy_messages = [
+        {
+            "role":       "CONSULTANT" if m.get("speaker") == "ASTROLOGER" else "USER",
+            "message":    m.get("message_text", ""),
+            "timestamp":  m.get("timestamp"),
+            "message_id": m.get("turn_id"),
+        }
+        for m in session.get("messages", [])
+    ]
+    try:
+        order_id = int(session.get("session_id"))
+    except (TypeError, ValueError):
+        order_id = 0
     return {
-        "session_id":              str(session.get("order_id")),
-        "astrologer_id":           session.get("consultant_name", ""),
-        "user_id":                 session.get("user_name", ""),
-        "session_start":           t_start,
-        "session_end":             t_end,
-        "duration_minutes":        duration_m,
-        "session_type":            "chat",
-        "language_detected":       result.primary_language,
+        "order_id":        order_id,
+        "consultant_name": session.get("astrologer_id") or "",
+        "user_name":       "",
+        "category":        None,
+        "messages":        legacy_messages,
+    }
+
+
+def _build_session_data(session: dict, result, classification) -> dict:
+    return {
+        "session_id":              str(session.get("session_id")),
+        "astrologer_id":           session.get("astrologer_id"),
+        "user_id":                 None,
+        "session_start":           session.get("session_start"),
+        "session_end":             session.get("session_end"),
+        "duration_minutes":        session.get("duration_minutes"),
+        "session_type":            session.get("session_type", "chat"),
+        "session_date":            session.get("session_date"),
+        "month":                   session.get("month"),
+        "language_code":           session.get("language_code"),
+        "language_detected":       result.primary_language or session.get("language_detected"),
         "overall_verdict":         _VERDICT_MAP.get(result.final_severity, "CLEAN"),
         "confidence_score":        _CONF_SCORE.get(result.confidence_level, 0.3),
-        "astrotalk_flagged":       0 if session.get("category") == "False Positives" else 1,
-        "astrotalk_flag_category": session.get("category", ""),
-        "astrotalk_severity":      session.get("category", ""),
+        "astrotalk_flagged":       session.get("astrotalk_flagged", 0),
+        "astrotalk_flag_category": None,
+        "astrotalk_severity":      None,
     }
 
 
 def _build_turns(messages: list[dict]) -> list[dict]:
     return [
         {
-            "turn_id":           i + 1,
-            "speaker":           "ASTROLOGER" if m.get("role") == "CONSULTANT" else "USER",
-            "message_text":      m.get("message", ""),
+            "turn_id":           m.get("turn_id"),
+            "speaker":           m.get("speaker", "UNKNOWN"),
+            "message_text":      m.get("message_text", ""),
             "timestamp":         m.get("timestamp"),
-            "language_detected": None,
+            "language_detected": m.get("language_detected"),
+            "is_automated":      m.get("is_automated", 0),
+            "has_link":          m.get("has_link", 0),
         }
-        for i, m in enumerate(messages)
+        for m in messages
     ]
 
 
@@ -160,30 +177,27 @@ def process_session(
     across the batch.  When called standalone the function instantiates
     its own engine objects.
     """
-    session_id = str(session.get("order_id", "unknown"))
+    session_id = str(session.get("session_id", "unknown"))
     try:
         analyser   = _analyser   or ConsultantAnalyser()
         clf        = _clf        or LLMClassifier()
         aggregator = _aggregator or SessionAggregator()
 
+        legacy_session = _to_legacy_session(session)
+
         # Layer 1 — rule-based consultant behaviour analysis
-        profile = analyser.analyse(session)
+        profile = analyser.analyse(legacy_session)
 
         # Layer 2 — LLM classification (also runs language detection + chunking internally)
-        classification = clf.classify_session(session)
+        classification = clf.classify_session(legacy_session)
 
         # Verdict aggregation
-        result = aggregator.aggregate(
-            classification,
-            profile,
-            human_label=session.get("category"),
-        )
+        result = aggregator.aggregate(classification, profile, human_label=None)
 
-        messages = session.get("messages", [])
         return {
             "session_id":   session_id,
             "session_data": _build_session_data(session, result, classification),
-            "turns":        _build_turns(messages),
+            "turns":        _build_turns(session.get("messages", [])),
             "flags":        _build_flags(classification, profile),
         }
 
@@ -192,7 +206,7 @@ def process_session(
         return None
 
 
-def run_batch(data_path: str, fresh_run: bool = False) -> None:
+def run_batch(data_path: str, fresh_run: bool = False, limit: int = None) -> None:
     logger = get_logger(__name__)
 
     initialise_db()
@@ -209,10 +223,15 @@ def run_batch(data_path: str, fresh_run: bool = False) -> None:
         logger.info("Checkpoint cleared — fresh run in progress.")
 
     loader   = DataLoader(data_path)
-    sessions = loader.load()
+    sessions = loader.load_sessions()
 
     processed_ids = load_checkpoint()
-    pending       = [s for s in sessions if str(s.get("order_id")) not in processed_ids]
+    pending       = [s for s in sessions if str(s.get("session_id")) not in processed_ids]
+
+    if limit is not None:
+        pending = pending[:limit]
+        print(f"  --limit applied: processing {len(pending)} of {len(sessions)} total sessions")
+
     logger.info(
         "Sessions: total=%d  already_done=%d  to_process=%d",
         len(sessions), len(processed_ids), len(pending),
@@ -230,7 +249,7 @@ def run_batch(data_path: str, fresh_run: bool = False) -> None:
 
     try:
         for session in pending:
-            session_id = str(session.get("order_id", ""))
+            session_id = str(session.get("session_id", ""))
             t_start    = time.time()
 
             result = process_session(
@@ -345,9 +364,25 @@ def ingest_only(data_path: str) -> None:
             re_engage_flags = analyser.detect_post_session_messages(
                 session.get('messages', [])
             )
-            if re_engage_flags:
+            link_flags = [
+                {
+                    'category_code':       'EXTERNAL_MEDIA_CONTENT',
+                    'detection_layer':     'REGEX',
+                    'severity':            'MEDIUM',
+                    'confidence_score':    0.7,
+                    'reasoning':           'Message contains an external link or media — requires manual verification',
+                    'false_positive_risk': 'MEDIUM',
+                    'pattern_matched':     (turn.get('message_text') or '')[:100],
+                    'turn_id':             turn.get('turn_id'),
+                }
+                for turn in turns
+                if turn.get('has_link') == 1
+            ]
+
+            all_auto_flags = re_engage_flags + link_flags
+            if all_auto_flags:
                 from store.writer import write_flags
-                write_flags(session_id, re_engage_flags)
+                write_flags(session_id, all_auto_flags)
                 from store.db import get_connection
                 with get_connection() as conn:
                     conn.execute(
@@ -398,6 +433,13 @@ def main() -> None:
         action="store_true",
         help="Load sessions into the DB without running AI classification",
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Process at most N sessions (useful for test runs)",
+    )
     args = parser.parse_args()
 
     if args.ingest_only:
@@ -406,7 +448,7 @@ def main() -> None:
         print("=" * 60)
         print("  AstroTalk Content Safety — Batch Pipeline Starting")
         print("=" * 60)
-        run_batch(args.data, fresh_run=args.fresh)
+        run_batch(args.data, fresh_run=args.fresh, limit=args.limit)
         print("=" * 60)
         print(f"  Batch run complete. Results written to {DB_PATH}")
         print("=" * 60)

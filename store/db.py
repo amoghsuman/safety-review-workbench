@@ -29,6 +29,8 @@ def initialise_db() -> None:
         "ALTER TABLE sessions ADD COLUMN month TEXT",
         "ALTER TABLE sessions ADD COLUMN language_code TEXT",
         "ALTER TABLE turns ADD COLUMN has_link INTEGER DEFAULT 0",
+        "ALTER TABLE sessions ADD COLUMN locked_by TEXT",
+        "ALTER TABLE sessions ADD COLUMN locked_at TEXT",
     ]
 
     with get_connection() as conn:
@@ -97,10 +99,10 @@ def fetch_pending_review_sessions(limit: int = 50) -> list[dict]:
 
 
 _ACTION_STATUS_MAP = {
-    "CONFIRM":        "CONFIRMED",
-    "FALSE_POSITIVE": "OVERRIDDEN",
-    "ESCALATE":       "ESCALATED",
-    "CLEAR":          "REVIEWED",
+    "CONFIRM":             "CONFIRMED",
+    "FALSE_POSITIVE":      "OVERRIDDEN",
+    "NEEDS_FINAL_REVIEW":  "NEEDS_FINAL_REVIEW",
+    "CLEAR":               "REVIEWED",
 }
 
 
@@ -121,3 +123,27 @@ def update_review_status(
     """
     with get_connection() as conn:
         conn.execute(query, (new_status, reviewer_id, note, session_id))
+
+
+def lock_session(session_id: str, reviewer_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE sessions
+               SET review_status = 'LOCKED',
+                   locked_by     = ?,
+                   locked_at     = datetime('now')
+               WHERE session_id = ?""",
+            (reviewer_id, session_id),
+        )
+
+
+def unlock_session(session_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE sessions
+               SET review_status = 'REVIEWED',
+                   locked_by     = NULL,
+                   locked_at     = NULL
+               WHERE session_id = ?""",
+            (session_id,),
+        )

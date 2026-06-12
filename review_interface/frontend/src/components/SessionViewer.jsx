@@ -11,15 +11,18 @@ import {
 // ---------------------------------------------------------------------------
 
 const ACTIONS = [
-  { key: 'CONFIRM',        label: 'Confirm Flag',        active: { bg: C.accent,     color: '#FFFFFF',       border: C.accent       } },
-  { key: 'FALSE_POSITIVE', label: 'Mark False Positive', active: { bg: C.flaggedBg,  color: C.flaggedText,   border: C.flaggedBorder } },
-  { key: 'ESCALATE',       label: 'Escalate',            active: { bg: C.severeBg,   color: C.severeText,    border: C.severeBorder  } },
-  { key: 'CLEAR',          label: 'Clear',               active: { bg: C.bgStatsrow, color: C.textSecondary, border: C.border        } },
+  { key: 'CONFIRM',             label: 'Confirm Flag',        active: { bg: C.accent,     color: '#FFFFFF',       border: C.accent       } },
+  { key: 'FALSE_POSITIVE',      label: 'Mark False Positive', active: { bg: C.flaggedBg,  color: C.flaggedText,   border: C.flaggedBorder } },
+  { key: 'NEEDS_FINAL_REVIEW',  label: 'Needs Final Review',  active: { bg: C.severeBg,   color: C.severeText,    border: C.severeBorder  } },
+  { key: 'CLEAR',               label: 'Clear',               active: { bg: C.bgStatsrow, color: C.textSecondary, border: C.border        } },
 ];
 
 const STATUS_LABEL = {
-  CONFIRMED: 'Confirmed Flag', OVERRIDDEN: 'Marked False Positive',
-  ESCALATED: 'Escalated',      REVIEWED:   'Cleared',
+  CONFIRMED:          'Confirmed Flag',
+  OVERRIDDEN:         'Marked False Positive',
+  NEEDS_FINAL_REVIEW: 'Needs Final Review',
+  REVIEWED:           'Cleared',
+  LOCKED:             'Locked',
 };
 
 const INTENT_CATEGORIES = [
@@ -31,19 +34,50 @@ const INTENT_CATEGORIES = [
 ];
 
 // ---------------------------------------------------------------------------
-// Fuzzy flag → turn association (turn_id primary, word-overlap fallback)
+// Flag → turn association
+// Priority 1: direct turn_id match (value equality, not index arithmetic)
+// Priority 2: pattern_matched exact substring containment (for null turn_id)
+// Priority 3: fuzzy word-overlap on reasoning (non-MANUAL, null turn_id only)
+// DISMISSED flags are excluded — they should not generate transcript badges.
 // ---------------------------------------------------------------------------
 function buildFlagsByTurnIdx(turns, flags) {
   const result = {};
   flags.forEach((flag) => {
+    if (flag.detection_layer === 'DISMISSED') return;
+
+    // Priority 1 — direct turn_id value match
     if (flag.turn_id != null) {
-      const idx = flag.turn_id - 1;
-      if (idx >= 0 && idx < turns.length) {
+      const idx = turns.findIndex((t) => String(t.turn_id) === String(flag.turn_id));
+      if (idx >= 0) {
         if (!result[idx]) result[idx] = [];
         result[idx].push(flag);
-        return;
       }
+      return; // do not fall through — turn_id was explicitly set
     }
+
+    // Priority 2 — pattern_matched substring containment
+    // pattern_matched for MANUAL flags is the first 200 chars of message_text,
+    // so either the turn contains pm (long message) or pm equals tm (short message).
+    const pm = (flag.pattern_matched || '').trim().toLowerCase();
+    if (pm.length >= 4) {
+      let matched = false;
+      for (let i = 0; i < turns.length; i++) {
+        const tm = (turns[i].message_text || '').trim().toLowerCase();
+        if (tm.includes(pm) || pm.includes(tm)) {
+          if (!result[i]) result[i] = [];
+          result[i].push(flag);
+          matched = true;
+          break;
+        }
+      }
+      if (!matched && flag.detection_layer === 'MANUAL') {
+        console.warn('No turn match for flag', flag.flag_id, pm);
+        return; // MANUAL flags don't fall through to word-overlap
+      }
+      if (matched) return;
+    }
+
+    // Priority 3 — reasoning word-overlap (LLM / REGEX flags without a pattern_matched match)
     if (!flag.reasoning) return;
     const reasonWords = new Set((flag.reasoning.toLowerCase().match(/\b[a-z]{4,}\b/g) || []));
     for (let i = 0; i < turns.length; i++) {
@@ -264,7 +298,7 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
   const currentIdx = sessionList ? sessionList.findIndex((s) => s.session_id === sessionId) : -1;
   const prevId     = currentIdx > 0                      ? sessionList[currentIdx - 1]?.session_id : null;
   const nextId     = currentIdx < sessionList.length - 1 ? sessionList[currentIdx + 1]?.session_id : null;
-  const noteRequired = selectedAction === 'FALSE_POSITIVE' || selectedAction === 'ESCALATE';
+  const noteRequired = selectedAction === 'FALSE_POSITIVE' || selectedAction === 'NEEDS_FINAL_REVIEW';
   const noteValid = !noteRequired || note.trim().length >= 10;
   const submitDisabled = !selectedAction || !noteValid || submitting;
 
@@ -395,6 +429,7 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
   const { session = {}, turns = [] } = data || {};
   const flagsByTurnIdx  = data ? buildFlagsByTurnIdx(turns, flags) : {};
   const firstFlaggedIdx = turns.findIndex((_, i) => flagsByTurnIdx[i]?.length > 0);
+  const isLocked        = session?.review_status === 'LOCKED';
   const isReviewed      = session?.review_status && session.review_status !== 'PENDING' && session.reviewer_id;
 
   // ── Flag lineage grouping ────────────────────────────────────────────────
@@ -443,6 +478,22 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
       }, 2000);
     };
 
+    // Step 0: pattern_matched exact substring (reliable for MANUAL flags whose
+    // pattern_matched is the first 200 chars of the flagged message_text)
+    if (flag.turn_id == null) {
+      const pm = (flag.pattern_matched || '').trim().toLowerCase();
+      if (pm.length >= 4) {
+        for (let i = 0; i < turns.length; i++) {
+          const tm = text(i).trim();
+          if (tm.includes(pm) || pm.includes(tm)) { doScroll(i); return; }
+        }
+        if (flag.detection_layer === 'MANUAL') {
+          console.warn('No turn match for flag', flag.flag_id, pm);
+          return;
+        }
+      }
+    }
+
     // Step 1: tokens from pattern_matched > 6 chars
     const patParts = (flag.pattern_matched || '').toLowerCase().split(/\s+/).filter(t => t.length > 6);
     for (let i = 0; i < turns.length; i++) {
@@ -461,12 +512,22 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
       if (catParts.some(w => text(i).includes(w))) { doScroll(i); return; }
     }
 
-    // Step 4: no match — silently do nothing
+    // Step 4: no match
   };
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', background: C.bgPage }}>
+
+      {/* ── Locked banner ────────────────────────────────────────────────── */}
+      {!loading && isLocked && (
+        <div style={{
+          flexShrink: 0, background: '#F1EFE8', borderBottom: '2px solid #D3D1C7',
+          padding: '10px 20px', fontSize: 12, fontFamily: MONO, color: '#444441',
+        }}>
+          🔒 Locked by {session.locked_by} on {session.locked_at ? String(session.locked_at).slice(0, 10) : '—'} — this session is finalised and read-only
+        </div>
+      )}
 
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div style={{
@@ -482,7 +543,9 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1,
           justifyContent: 'center', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 13, fontFamily: MONO, color: C.textSecondary }}>{sessionId}</span>
+          <span style={{ fontSize: 13, fontFamily: MONO, color: C.textSecondary }}>
+            {isLocked && <span style={{ marginRight: 4 }}>🔒</span>}{sessionId}
+          </span>
           {!loading && <VerdictBadge verdict={session.overall_verdict} />}
           {!loading && session.language_detected && (
             <span style={{ fontSize: 11, fontFamily: MONO, background: C.bgStatsrow,
@@ -591,10 +654,19 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
                       transition: 'box-shadow 0.4s ease-out',
                     }}>
                       {turn.message_text || '(empty)'}
+                      {turn.has_link === 1 && (
+                        <span style={{
+                          display: 'inline-block', marginLeft: 6, fontSize: 10,
+                          fontFamily: MONO, background: '#E6F1FB', border: '1px solid #B5D4F4',
+                          color: '#0C447C', borderRadius: 3, padding: '1px 6px',
+                        }}>
+                          🔗 Link
+                        </span>
+                      )}
                     </div>
 
-                    {/* + Flag button — shows on hover */}
-                    {(isHovered || isPopoverOpen) && (
+                    {/* + Flag button — shows on hover, hidden when locked */}
+                    {!isLocked && (isHovered || isPopoverOpen) && (
                       <button
                         onMouseDown={(e) => e.stopPropagation()}
                         onClick={(e) => {
@@ -736,17 +808,19 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
             <textarea
               rows={3}
               value={sessionNote}
-              onChange={(e) => handleNoteChange(e.target.value)}
-              onFocus={() => setSessionNoteFocused(true)}
+              disabled={isLocked}
+              onChange={(e) => !isLocked && handleNoteChange(e.target.value)}
+              onFocus={() => !isLocked && setSessionNoteFocused(true)}
               onBlur={() => setSessionNoteFocused(false)}
               placeholder="Add an overall observation about this session..."
               style={{
                 width: '100%', padding: '10px 12px', fontSize: 13,
                 border: `1px solid ${sessionNoteFocused ? C.accent : C.border}`,
                 borderRadius: 5,
-                background: sessionNoteFocused ? C.bgSurface : C.bgMuted,
-                resize: 'none', color: C.textPrimary,
+                background: isLocked ? C.bgStatsrow : sessionNoteFocused ? C.bgSurface : C.bgMuted,
+                resize: 'none', color: isLocked ? C.textSecondary : C.textPrimary,
                 transition: 'border-color 150ms, background 150ms',
+                cursor: isLocked ? 'not-allowed' : undefined,
               }}
             />
           </div>
@@ -886,12 +960,12 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
                             {flag.category_code}
                           </span>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-                            {showEdit && (
+                            {!isLocked && showEdit && (
                               <FlagActionButton label="Edit"
                                 onClick={(e) => { e.stopPropagation(); openEditForm(flag); }}
                                 hoverColor="#0F6E56" hoverBorder="#0F6E56" />
                             )}
-                            {showDismiss && (
+                            {!isLocked && showDismiss && (
                               <FlagActionButton label="Dismiss"
                                 onClick={(e) => { e.stopPropagation(); setDismissingFlagId(flag.flag_id); setDismissNote(''); }}
                                 hoverColor="#A32D2D" hoverBorder="#F7C1C1" />
@@ -1032,7 +1106,8 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
             )}
           </div>
 
-          {/* ── Review panel ─────────────────────────────────────────────── */}
+          {/* ── Review panel — hidden entirely when session is locked ──────── */}
+          {!isLocked && (
           <div style={{ flexShrink: 0, borderTop: `2px solid ${C.border}`, background: C.bgSurface, padding: 20 }}>
             {isReviewed && !showUpdateForm ? (
               <div>
@@ -1059,15 +1134,26 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
 
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 12 }}>
                   {ACTIONS.map((a) => {
-                    const isSelected = selectedAction === a.key;
+                    const isSelected   = selectedAction === a.key;
+                    const clearBlocked = a.key === 'CLEAR' && activeFlagCount > 0;
                     const s = isSelected ? a.active : { bg: C.bgStatsrow, color: C.textSecondary, border: C.border };
                     return (
-                      <button key={a.key} onClick={() => { setSelectedAction(a.key); setNoteValidation(false); }} style={{
-                        padding: '9px 0', fontSize: 13, fontWeight: isSelected ? 600 : 500,
-                        borderRadius: 5, border: `1px solid ${s.border}`, background: s.bg, color: s.color,
-                        cursor: 'pointer', outline: isSelected ? `2px solid ${s.border}` : 'none',
-                        outlineOffset: 1, transition: 'all 120ms',
-                      }}>
+                      <button
+                        key={a.key}
+                        disabled={clearBlocked}
+                        title={clearBlocked ? 'Clear is only available for sessions with no flags' : undefined}
+                        onClick={() => { if (!clearBlocked) { setSelectedAction(a.key); setNoteValidation(false); } }}
+                        style={{
+                          padding: '9px 0', fontSize: 13, fontWeight: isSelected ? 600 : 500,
+                          borderRadius: 5, border: `1px solid ${clearBlocked ? C.border : s.border}`,
+                          background: clearBlocked ? C.bgStatsrow : s.bg,
+                          color: clearBlocked ? '#C4C0B8' : s.color,
+                          cursor: clearBlocked ? 'not-allowed' : 'pointer',
+                          outline: isSelected ? `2px solid ${s.border}` : 'none',
+                          outlineOffset: 1, transition: 'all 120ms',
+                          opacity: clearBlocked ? 0.6 : 1,
+                        }}
+                      >
                         {a.label}
                       </button>
                     );
@@ -1117,6 +1203,7 @@ export default function SessionViewer({ sessionId, sessionList, reviewerName, on
               </>
             )}
           </div>
+          )}
         </div>
       </div>
 

@@ -17,11 +17,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     astrotalk_flagged   INTEGER,                            -- 0 or 1
     astrotalk_flag_category TEXT,
     astrotalk_severity  TEXT,
-    review_status       TEXT    DEFAULT 'PENDING',          -- 'PENDING', 'REVIEWED', 'CONFIRMED', 'OVERRIDDEN', 'ESCALATED'
+    review_status       TEXT    DEFAULT 'PENDING',          -- 'PENDING', 'REVIEWED', 'CONFIRMED', 'OVERRIDDEN', 'NEEDS_FINAL_REVIEW', 'LOCKED'
     reviewer_id         TEXT,
     reviewer_note       TEXT,
     reviewed_at         TEXT,
     session_note        TEXT,
+    locked_by           TEXT,
+    locked_at           TEXT,
     created_at          TEXT    DEFAULT (datetime('now'))
 );
 

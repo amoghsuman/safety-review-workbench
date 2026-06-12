@@ -3,6 +3,7 @@ Central configuration for the AstroTalk NSFW Detection Engine.
 All tunable parameters, model names, thresholds, and paths live here.
 """
 
+import os
 from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
@@ -19,9 +20,11 @@ OUTPUTS_DIR        = BASE_DIR / "outputs"
 # ---------------------------------------------------------------------------
 # LLM backend selection
 # ---------------------------------------------------------------------------
-USE_CLAUDE_API = True                        # True = Claude API, False = Ollama
+LLM_PROVIDER   = os.environ.get("LLM_PROVIDER", "claude")  # "claude" | "gemini" | "ollama"
+USE_CLAUDE_API = LLM_PROVIDER == "claude"    # backward-compat alias
 CLAUDE_MODEL   = "claude-sonnet-4-20250514"  # Claude model ID
-# ANTHROPIC_API_KEY must be set as an environment variable — never hardcode it
+GEMINI_MODEL   = "gemini-2.0-flash"          # Gemini model ID
+# ANTHROPIC_API_KEY / GOOGLE_API_KEY must be set as environment variables
 
 # ---------------------------------------------------------------------------
 # Ollama / LLM settings (fallback when USE_CLAUDE_API = False)

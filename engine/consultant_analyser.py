@@ -350,16 +350,25 @@ class ConsultantAnalyser:
         message_text, turn_id) — not the old role/message format used by
         analyse(). Called from ingest_only() in batch_runner.py.
         """
-        session_end_keywords = [
-            'chat ended', 'low balance', 'recharge', 'automated message',
-            'session ended', 'contact customer', 'end due to', 'wallet',
+        terminal_keywords = [
+            'chat ended', 'session ended',
+            'ended due to', 'contact customer support',
+            'chat has ended', 'this session has ended',
+        ]
+        continuation_keywords = [
+            'continue chatting', 'continue the chat',
+            'to continue', 'resume chat',
         ]
 
         last_auto_idx = -1
         for i, turn in enumerate(turns):
             if turn.get('is_automated') == 1:
                 text = str(turn.get('message_text', '')).lower()
-                if any(kw in text for kw in session_end_keywords):
+                is_terminal = (
+                    any(kw in text for kw in terminal_keywords)
+                    and not any(kw in text for kw in continuation_keywords)
+                )
+                if is_terminal:
                     last_auto_idx = i
 
         if last_auto_idx == -1:

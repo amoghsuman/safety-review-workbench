@@ -1,11 +1,19 @@
 import React from 'react';
 import { C, MONO } from '../tokens';
 
-const PENDING = { bg: C.bgStatsrow, border: '#D4D0C9', text: C.textSecondary };
-const DONE    = { bg: C.accentLight, border: '#9FE1CB', text: C.accentDark };
+const STYLES = {
+  PENDING:           { bg: C.bgStatsrow,  border: '#D4D0C9', text: C.textSecondary, label: 'PENDING'           },
+  REVIEWED:          { bg: C.accentLight, border: '#9FE1CB', text: C.accentDark,    label: 'REVIEWED'          },
+  CONFIRMED:         { bg: C.accentLight, border: '#9FE1CB', text: C.accentDark,    label: 'CONFIRMED'         },
+  OVERRIDDEN:        { bg: C.accentLight, border: '#9FE1CB', text: C.accentDark,    label: 'OVERRIDDEN'        },
+  NEEDS_FINAL_REVIEW:{ bg: '#FAEEDA',     border: '#FAC775', text: '#633806',       label: 'NEEDS FINAL REVIEW'},
+  LOCKED:            { bg: '#F1EFE8',     border: '#D3D1C7', text: '#444441',       label: 'LOCKED'            },
+};
+
+const DEFAULT = { bg: C.accentLight, border: '#9FE1CB', text: C.accentDark };
 
 export default function StatusBadge({ status }) {
-  const s = status === 'PENDING' ? PENDING : DONE;
+  const s = STYLES[status] ?? { ...DEFAULT, label: status };
   return (
     <span style={{
       display: 'inline-block',
@@ -21,7 +29,7 @@ export default function StatusBadge({ status }) {
       color: s.text,
       whiteSpace: 'nowrap',
     }}>
-      {status}
+      {s.label}
     </span>
   );
 }

@@ -379,6 +379,34 @@ class IntentLibrary:
         ),
 
         Intent(
+            intent_id="EXTERNAL_MEDIA_CONTENT",
+            name="External Link or Media Content",
+            description=(
+                "Message contains a URL or link to external media — images, audio, "
+                "documents, or websites. May be legitimate (kundli charts, horoscope "
+                "images) or may indicate off-platform redirection. Requires manual "
+                "verification to determine intent."
+            ),
+            severity="Amber",
+            examples=[
+                "Any message where has_link == 1 (detected by the data pipeline)",
+                "Message containing a URL or hyperlink to any external resource",
+                "Image or document link shared during the session",
+            ],
+            counter_examples=[
+                "References to AstroTalk's own in-app features or support pages",
+                "Messages that mention prices or offers without an external link",
+            ],
+            annexure_category="Category C — Platform Policy Violation",
+            detection_notes=(
+                "This intent is detected exclusively by the REGEX layer via the "
+                "has_link column set during data ingestion — do NOT attempt LLM "
+                "classification for this category. Severity is MEDIUM; false positive "
+                "risk is MEDIUM because legitimate chart/image sharing is common."
+            ),
+        ),
+
+        Intent(
             intent_id="RE_ENGAGEMENT_SOLICITATION",
             name="Post-Session Re-Engagement Solicitation",
             description=(

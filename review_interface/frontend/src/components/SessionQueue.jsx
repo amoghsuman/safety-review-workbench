@@ -133,6 +133,7 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
   const flagged      = stats?.count_flagged      ?? 0;
   const clean        = stats?.count_clean        ?? 0;
   const unprocessed  = stats?.count_unprocessed  ?? 0;
+  const locked       = stats?.count_locked       ?? 0;
   const total        = stats?.total_sessions     ?? 0;
   const pending      = stats?.total_pending      ?? 0;
   const reviewed     = total - pending;
@@ -142,6 +143,7 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
     { label: 'Flagged',        value: flagged,       color: C.flaggedText },
     { label: 'Clean',          value: clean,         color: C.cleanText   },
     { label: 'Unprocessed',    value: unprocessed,   color: '#444441'     },
+    { label: 'Locked',         value: locked,        color: '#444441'     },
     { label: 'Total sessions', value: total,         color: C.textPrimary },
     { label: 'Pending review', value: pending,       color: C.accent      },
   ];
@@ -193,6 +195,18 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
     } finally {
       setClearingSession(null);
     }
+  };
+
+  const handleLockSession = async (sid) => {
+    if (!window.confirm('Lock this session? This will freeze all flags and the review decision.')) return;
+    try {
+      await fetch(`/sessions/${sid}/lock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reviewer_id: reviewerName }),
+      });
+      await fetchAll();
+    } catch (_) {}
   };
 
   // ── Feature 5 — Export CSV ─────────────────────────────────────────────
@@ -321,7 +335,8 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
             <option value="REVIEWED">REVIEWED</option>
             <option value="CONFIRMED">CONFIRMED</option>
             <option value="OVERRIDDEN">OVERRIDDEN</option>
-            <option value="ESCALATED">ESCALATED</option>
+            <option value="NEEDS_FINAL_REVIEW">NEEDS FINAL REVIEW</option>
+            <option value="LOCKED">LOCKED</option>
           </select>
 
           {/* Feature 8 — Confidence slider */}
@@ -604,7 +619,10 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                       onMouseLeave={() => setHoveredRow(null)}
                       style={{ background: isHovered ? C.bgMuted : C.bgSurface, transition: 'background 150ms' }}
                     >
-                      <td style={tdMono(isLast)}>{s.session_id}</td>
+                      <td style={tdMono(isLast)}>
+                        {s.review_status === 'LOCKED' && <span style={{ marginRight: 4 }}>🔒</span>}
+                        {s.session_id}
+                      </td>
 
                       <td style={td(isLast)}><VerdictBadge verdict={s.overall_verdict} /></td>
 
@@ -689,19 +707,16 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
 
                       <td style={td(isLast)}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          {s.review_status === 'PENDING' && (
+                          {['REVIEWED', 'CONFIRMED', 'OVERRIDDEN', 'NEEDS_FINAL_REVIEW'].includes(s.review_status) && (
                             <button
-                              disabled={!!clearingSession}
-                              onClick={() => handleQuickClear(s.session_id)}
+                              onClick={() => handleLockSession(s.session_id)}
                               style={{
-                                padding: '5px 10px', fontSize: 11, background: C.bgSurface,
-                                border: `1px solid ${isClearing ? C.accent : C.border}`,
-                                borderRadius: 4, color: isClearing ? C.accent : C.textSecondary,
-                                cursor: clearingSession ? 'not-allowed' : 'pointer',
-                                whiteSpace: 'nowrap',
+                                padding: '5px 10px', fontSize: 11, background: '#FFFFFF',
+                                border: `1px solid ${C.accent}`, borderRadius: 4,
+                                color: C.accent, cursor: 'pointer', whiteSpace: 'nowrap',
                               }}
                             >
-                              {isClearing ? '…' : '✓ Clear'}
+                              Lock
                             </button>
                           )}
                           <button
@@ -709,11 +724,13 @@ export default function SessionQueue({ reviewerName, onSelectSession }) {
                             onClick={() => onSelectSession(s.session_id, sessions)}
                             style={{
                               padding: '5px 14px', fontSize: 12, fontWeight: 500,
-                              background: C.accent, color: '#FFFFFF', border: 'none',
+                              background: s.review_status === 'LOCKED' ? C.bgStatsrow : C.accent,
+                              color: s.review_status === 'LOCKED' ? C.textSecondary : '#FFFFFF',
+                              border: s.review_status === 'LOCKED' ? `1px solid ${C.border}` : 'none',
                               borderRadius: 4, transition: 'background 150ms', whiteSpace: 'nowrap',
                             }}
                           >
-                            Review →
+                            {s.review_status === 'LOCKED' ? 'View' : 'Review →'}
                           </button>
                         </div>
                       </td>

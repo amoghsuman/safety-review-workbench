@@ -31,8 +31,10 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from config import (
+    LLM_PROVIDER,
     USE_CLAUDE_API,
     CLAUDE_MODEL,
+    GEMINI_MODEL,
     OLLAMA_URL,
     OLLAMA_MODEL,
     OLLAMA_TIMEOUT,
@@ -158,7 +160,15 @@ class LLMClassifier:
 
         self._setup_logging()
 
-        if USE_CLAUDE_API:
+        if LLM_PROVIDER == "gemini":
+            api_key = os.environ.get("GOOGLE_API_KEY")
+            if not api_key:
+                raise RuntimeError(
+                    "Set GOOGLE_API_KEY environment variable.\n"
+                    "Run: $env:GOOGLE_API_KEY='your-key-here'"
+                )
+            self.logger.info("Using Gemini API — model: %s", GEMINI_MODEL)
+        elif LLM_PROVIDER == "claude":
             api_key = os.environ.get("ANTHROPIC_API_KEY")
             if not api_key:
                 raise RuntimeError(
@@ -188,8 +198,8 @@ class LLMClassifier:
         Returns a fail-safe ChunkResult (parse_success=False, severity=Green)
         if all retries are exhausted.
         """
-        if USE_CLAUDE_API:
-            # Full intent library — Claude handles large contexts well
+        if LLM_PROVIDER in ("claude", "gemini"):
+            # Full intent library — cloud APIs handle large contexts well
             intent_lib_text = self.intent_library.format_for_prompt(third_party_names)
         elif CPU_MODE:
             intent_lib_text = self._get_compact_intent_library(third_party_names)
@@ -271,7 +281,7 @@ class LLMClassifier:
         session_context = chunk_result.session_context
         chunks          = chunk_result.chunks
 
-        if not USE_CLAUDE_API and CPU_MODE and len(chunks) > 20:
+        if LLM_PROVIDER == "ollama" and CPU_MODE and len(chunks) > 20:
             self.logger.warning(
                 "Session %d has %d chunks — CPU mode will be slow. "
                 "Consider GPU for full runs.",
@@ -349,7 +359,12 @@ class LLMClassifier:
         chunk = chunks[chunk_index - 1]
 
         # Build prompt — same branch logic as classify_chunk
-        if USE_CLAUDE_API:
+        if LLM_PROVIDER == "gemini":
+            intent_lib_text = self.intent_library.format_for_prompt(
+                third_party_names or None
+            )
+            mode_label = "Gemini API (full library)"
+        elif LLM_PROVIDER == "claude":
             intent_lib_text = self.intent_library.format_for_prompt(
                 third_party_names or None
             )
@@ -419,11 +434,25 @@ class LLMClassifier:
     # ------------------------------------------------------------------
 
     def _call_model(self, prompt: str) -> str:
-        """Route to Claude API or Ollama based on USE_CLAUDE_API."""
-        if USE_CLAUDE_API:
+        """Route to the configured LLM backend."""
+        if LLM_PROVIDER == "gemini":
+            return self._call_gemini_api(prompt)
+        elif LLM_PROVIDER == "claude":
             return self._call_claude_api(prompt)
         else:
             return self._call_ollama(prompt)
+
+    def _call_gemini_api(self, prompt: str) -> str:
+        """Send prompt to Google Gemini API and return response text."""
+        import google.generativeai as genai
+
+        genai.configure(api_key=os.environ.get("GOOGLE_API_KEY"))
+        model = genai.GenerativeModel(GEMINI_MODEL)
+        response = model.generate_content(
+            prompt,
+            generation_config={"temperature": 0.1, "max_output_tokens": 1024},
+        )
+        return response.text
 
     def _call_claude_api(self, prompt: str) -> str:
         """Send prompt to Anthropic Claude API and return response text."""

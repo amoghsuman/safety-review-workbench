@@ -28,6 +28,8 @@ from store.db import (
     fetch_sessions,
     fetch_pending_review_sessions,
     update_review_status,
+    lock_session,
+    unlock_session,
     initialise_db,
 )
 from store.writer import write_review_action
@@ -65,7 +67,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_VALID_ACTIONS = {"CONFIRM", "FALSE_POSITIVE", "ESCALATE", "CLEAR"}
+_VALID_ACTIONS = {"CONFIRM", "FALSE_POSITIVE", "NEEDS_FINAL_REVIEW", "CLEAR"}
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +106,10 @@ class DismissFlagRequest(BaseModel):
     note: str
 
 
+class LockRequest(BaseModel):
+    reviewer_id: str
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — health + aggregate stats
 # ---------------------------------------------------------------------------
@@ -136,11 +142,14 @@ def stats():
             unprocessed = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE overall_verdict = 'UNPROCESSED'"
             ).fetchone()[0]
+            locked      = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE review_status = 'LOCKED'"
+            ).fetchone()[0]
     except Exception:
         return {
             "total_sessions": 0, "total_pending": 0, "total_reviewed": 0,
             "count_severe": 0, "count_flagged": 0, "count_clean": 0,
-            "count_unprocessed": 0,
+            "count_unprocessed": 0, "count_locked": 0,
         }
 
     return {
@@ -151,6 +160,7 @@ def stats():
         "count_flagged":     flagged,
         "count_clean":       clean,
         "count_unprocessed": unprocessed,
+        "count_locked":      locked,
     }
 
 
@@ -378,6 +388,24 @@ def manual_flag(session_id: str, body: ManualFlagRequest):
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         conn.close()
+
+
+@app.post("/sessions/{session_id}/lock")
+def lock_session_endpoint(session_id: str, body: LockRequest):
+    try:
+        lock_session(session_id, body.reviewer_id)
+        return {"success": True, "locked_by": body.reviewer_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/sessions/{session_id}/unlock")
+def unlock_session_endpoint(session_id: str):
+    try:
+        unlock_session(session_id)
+        return {"success": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/sessions/{session_id}/session-note")
