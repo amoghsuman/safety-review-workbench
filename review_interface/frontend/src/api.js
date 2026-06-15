@@ -32,6 +32,7 @@ export function getSessions(filters = {}) {
   if (filters.verdict)  params.append('verdict',  filters.verdict);
   if (filters.status)   params.append('status',   filters.status);
   if (filters.language) params.append('language', filters.language);
+  if (filters.reviewer) params.append('reviewer', filters.reviewer);
   const qs = params.toString() ? `?${params}` : '';
   return request(`/sessions${qs}`);
 }
@@ -76,6 +77,22 @@ export function saveSessionNote(sessionId, note, reviewerId) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ note, reviewer_id: reviewerId }),
+  });
+}
+
+export function finalApproveSession(sessionId, reviewerId) {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/final-approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer_id: reviewerId }),
+  });
+}
+
+export function finalApproveSessions(sessionIds, reviewerId) {
+  return request('/sessions/final-approve-bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer_id: reviewerId, session_ids: sessionIds }),
   });
 }
 

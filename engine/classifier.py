@@ -14,6 +14,8 @@ Pipeline per session:
 
 from __future__ import annotations
 from google import genai
+from google.genai import types
+
 import json
 import logging
 import os
@@ -448,8 +450,12 @@ class LLMClassifier:
         client = genai.Client(api_key=os.environ.get("GOOGLE_API_KEY"))
 
         response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt, generation_config={"temperature": 0.1, "max_output_tokens": 1024}
+        model="gemini-3.5-flash", # Use your preferred model
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            max_output_tokens=1024
+        )
         )
         return response.text
 

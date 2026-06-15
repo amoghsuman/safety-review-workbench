@@ -119,7 +119,7 @@ export default function LoginScreen({ onLogin }) {
               type="text"
               autoFocus
               autoComplete="off"
-              placeholder="e.g. Amogh Suman"
+              placeholder="Enter your name"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onFocus={() => setFocused(true)}
