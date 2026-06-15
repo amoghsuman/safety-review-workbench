@@ -31,6 +31,14 @@ def initialise_db() -> None:
         "ALTER TABLE turns ADD COLUMN has_link INTEGER DEFAULT 0",
         "ALTER TABLE sessions ADD COLUMN locked_by TEXT",
         "ALTER TABLE sessions ADD COLUMN locked_at TEXT",
+        # Flag confirmation columns
+        "ALTER TABLE flags ADD COLUMN confirmed_by TEXT",
+        "ALTER TABLE flags ADD COLUMN confirmed_at TEXT",
+        "ALTER TABLE flags ADD COLUMN is_confirmed INTEGER DEFAULT 0",
+        # Session submission columns
+        "ALTER TABLE sessions ADD COLUMN submitted_by TEXT",
+        "ALTER TABLE sessions ADD COLUMN submitted_at TEXT",
+        "ALTER TABLE sessions ADD COLUMN needs_final_review INTEGER DEFAULT 0",
     ]
 
     with get_connection() as conn:
@@ -38,8 +46,8 @@ def initialise_db() -> None:
             try:
                 conn.execute(migration)
                 conn.commit()
-            except Exception:
-                pass  # Column already exists, safe to ignore
+            except sqlite3.OperationalError:
+                pass  # Column already exists — safe to skip
 
     print(f"Database initialised at {DB_PATH}")
 
@@ -99,10 +107,12 @@ def fetch_pending_review_sessions(limit: int = 50) -> list[dict]:
 
 
 _ACTION_STATUS_MAP = {
-    "CONFIRM":             "CONFIRMED",
-    "FALSE_POSITIVE":      "OVERRIDDEN",
-    "NEEDS_FINAL_REVIEW":  "NEEDS_FINAL_REVIEW",
-    "CLEAR":               "REVIEWED",
+    "CONFIRM":            "CONFIRMED",
+    "FALSE_POSITIVE":     "OVERRIDDEN",
+    "NEEDS_FINAL_REVIEW": "NEEDS_FINAL_REVIEW",
+    "CLEAR":              "REVIEWED",
+    "SUBMIT":             "SUBMITTED_FOR_REVIEW",
+    "LOCK":               "LOCKED",
 }
 
 
@@ -112,6 +122,11 @@ def update_review_status(
     reviewer_id: str,
     note: str,
 ) -> None:
+    valid_actions = set(_ACTION_STATUS_MAP.keys())
+    if action not in valid_actions:
+        raise ValueError(
+            f"Invalid action '{action}'. Valid actions: {valid_actions}"
+        )
     new_status = _ACTION_STATUS_MAP[action]
     query = """
         UPDATE sessions
@@ -123,6 +138,77 @@ def update_review_status(
     """
     with get_connection() as conn:
         conn.execute(query, (new_status, reviewer_id, note, session_id))
+
+
+def confirm_flag(flag_id: int, reviewer_id: str) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE flags
+               SET is_confirmed = 1,
+                   confirmed_by = ?,
+                   confirmed_at = datetime('now')
+               WHERE flag_id = ?""",
+            (reviewer_id, flag_id),
+        )
+
+
+def submit_session_for_review(
+    session_id: str,
+    reviewer_id: str,
+    note: str = None,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE sessions
+               SET review_status = 'SUBMITTED_FOR_REVIEW',
+                   submitted_by  = ?,
+                   submitted_at  = datetime('now'),
+                   reviewer_id   = ?,
+                   reviewer_note = ?
+               WHERE session_id = ?""",
+            (reviewer_id, reviewer_id, note, session_id),
+        )
+
+
+def mark_needs_final_review(
+    session_id: str,
+    reviewer_id: str,
+) -> None:
+    with get_connection() as conn:
+        conn.execute(
+            """UPDATE sessions
+               SET review_status      = 'NEEDS_FINAL_REVIEW',
+                   needs_final_review = 1,
+                   reviewer_id        = ?
+               WHERE session_id = ?""",
+            (reviewer_id, session_id),
+        )
+
+
+def get_session_flag_summary(session_id: str) -> dict:
+    with get_connection() as conn:
+        total_flags = conn.execute(
+            """SELECT COUNT(*) FROM flags
+               WHERE session_id = ?
+                 AND detection_layer NOT IN ('DISMISSED')""",
+            (session_id,),
+        ).fetchone()[0]
+
+        actioned_flags = conn.execute(
+            """SELECT COUNT(*) FROM flags
+               WHERE session_id = ?
+                 AND detection_layer NOT IN ('DISMISSED')
+                 AND (is_confirmed = 1 OR detection_layer = 'AMENDED')""",
+            (session_id,),
+        ).fetchone()[0]
+
+    unactioned_flags = total_flags - actioned_flags
+    return {
+        "total_flags":      total_flags,
+        "actioned_flags":   actioned_flags,
+        "unactioned_flags": unactioned_flags,
+        "can_submit":       unactioned_flags == 0,
+    }
 
 
 def lock_session(session_id: str, reviewer_id: str) -> None:

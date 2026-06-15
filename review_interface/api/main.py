@@ -28,6 +28,10 @@ from store.db import (
     fetch_sessions,
     fetch_pending_review_sessions,
     update_review_status,
+    confirm_flag,
+    submit_session_for_review,
+    mark_needs_final_review,
+    get_session_flag_summary,
     lock_session,
     unlock_session,
     initialise_db,
@@ -110,6 +114,11 @@ class LockRequest(BaseModel):
     reviewer_id: str
 
 
+class SubmitRequest(BaseModel):
+    reviewer_id: str
+    note: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Endpoints — health + aggregate stats
 # ---------------------------------------------------------------------------
@@ -145,22 +154,31 @@ def stats():
             locked      = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE review_status = 'LOCKED'"
             ).fetchone()[0]
+            submitted   = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE review_status = 'SUBMITTED_FOR_REVIEW'"
+            ).fetchone()[0]
+            needs_final = conn.execute(
+                "SELECT COUNT(*) FROM sessions WHERE review_status = 'NEEDS_FINAL_REVIEW'"
+            ).fetchone()[0]
     except Exception:
         return {
             "total_sessions": 0, "total_pending": 0, "total_reviewed": 0,
             "count_severe": 0, "count_flagged": 0, "count_clean": 0,
             "count_unprocessed": 0, "count_locked": 0,
+            "count_submitted": 0, "count_needs_final_review": 0,
         }
 
     return {
-        "total_sessions":    total,
-        "total_pending":     pending,
-        "total_reviewed":    reviewed,
-        "count_severe":      severe,
-        "count_flagged":     flagged,
-        "count_clean":       clean,
-        "count_unprocessed": unprocessed,
-        "count_locked":      locked,
+        "total_sessions":           total,
+        "total_pending":            pending,
+        "total_reviewed":           reviewed,
+        "count_severe":             severe,
+        "count_flagged":            flagged,
+        "count_clean":              clean,
+        "count_unprocessed":        unprocessed,
+        "count_locked":             locked,
+        "count_submitted":          submitted,
+        "count_needs_final_review": needs_final,
     }
 
 
@@ -392,6 +410,11 @@ def manual_flag(session_id: str, body: ManualFlagRequest):
 
 @app.post("/sessions/{session_id}/lock")
 def lock_session_endpoint(session_id: str, body: LockRequest):
+    if body.reviewer_id != "Amogh":
+        raise HTTPException(
+            status_code=403,
+            detail="Only L2 reviewer can lock sessions",
+        )
     try:
         lock_session(session_id, body.reviewer_id)
         return {"success": True, "locked_by": body.reviewer_id}
@@ -475,6 +498,21 @@ def amend_flag(flag_id: int, body: AmendFlagRequest):
         conn.close()
 
 
+@app.post("/flags/{flag_id}/confirm")
+def confirm_flag_endpoint(flag_id: int, body: LockRequest):
+    with get_connection() as conn:
+        flag = conn.execute(
+            "SELECT flag_id FROM flags WHERE flag_id = ?", (flag_id,)
+        ).fetchone()
+    if flag is None:
+        raise HTTPException(status_code=404, detail=f"Flag {flag_id} not found")
+    try:
+        confirm_flag(flag_id, body.reviewer_id)
+        return {"success": True, "flag_id": flag_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.post("/flags/{flag_id}/dismiss")
 def dismiss_flag(flag_id: int, body: DismissFlagRequest):
     conn = get_connection()
@@ -522,6 +560,47 @@ def dismiss_flag(flag_id: int, body: DismissFlagRequest):
         raise HTTPException(status_code=500, detail=str(exc))
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Endpoints — session submission workflow
+# ---------------------------------------------------------------------------
+
+@app.post("/sessions/{session_id}/submit")
+def submit_session(session_id: str, body: SubmitRequest):
+    try:
+        summary = get_session_flag_summary(session_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    if not summary["can_submit"]:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "Cannot submit — unactioned flags remain",
+                "unactioned_count": summary["unactioned_flags"],
+            },
+        )
+
+    try:
+        submit_session_for_review(session_id, body.reviewer_id, body.note or None)
+        return {"success": True, "session_id": session_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/sessions/{session_id}/needs-final-review")
+def needs_final_review(session_id: str, body: LockRequest):
+    if body.reviewer_id != "Amogh":
+        raise HTTPException(
+            status_code=403,
+            detail="Only L2 reviewer can mark needs final review",
+        )
+    try:
+        mark_needs_final_review(session_id, body.reviewer_id)
+        return {"success": True}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

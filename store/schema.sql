@@ -17,13 +17,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     astrotalk_flagged   INTEGER,                            -- 0 or 1
     astrotalk_flag_category TEXT,
     astrotalk_severity  TEXT,
-    review_status       TEXT    DEFAULT 'PENDING',          -- 'PENDING', 'REVIEWED', 'CONFIRMED', 'OVERRIDDEN', 'NEEDS_FINAL_REVIEW', 'LOCKED'
+    review_status       TEXT    DEFAULT 'PENDING',          -- 'PENDING', 'SUBMITTED_FOR_REVIEW', 'NEEDS_FINAL_REVIEW', 'LOCKED', 'REVIEWED', 'CONFIRMED', 'OVERRIDDEN'
     reviewer_id         TEXT,
     reviewer_note       TEXT,
     reviewed_at         TEXT,
     session_note        TEXT,
     locked_by           TEXT,
     locked_at           TEXT,
+    submitted_by        TEXT,                               -- L1 reviewer who submitted for final review
+    submitted_at        TEXT,                               -- timestamp of submission
+    needs_final_review  INTEGER DEFAULT 0,                  -- 1 if marked by L2 for final review
     created_at          TEXT    DEFAULT (datetime('now'))
 );
 
@@ -45,12 +48,15 @@ CREATE TABLE IF NOT EXISTS flags (
     session_id          TEXT,
     turn_id             INTEGER,
     category_code       TEXT,                               -- e.g. 'OFF_PLATFORM', 'NSFW', 'FEAR_MANIPULATION'
-    detection_layer     TEXT,                               -- 'REGEX', 'LLM', or 'MANUAL'
+    detection_layer     TEXT,                               -- 'REGEX', 'LLM', 'MANUAL', 'AMENDED', 'DISMISSED'
     severity            TEXT,                               -- 'LOW', 'MEDIUM', 'HIGH'
     confidence_score    REAL,
     reasoning           TEXT,
     false_positive_risk TEXT,                               -- 'LOW', 'MEDIUM', 'HIGH'
     pattern_matched     TEXT,                               -- for regex/manual layer: the pattern or message text
+    confirmed_by        TEXT,                               -- reviewer_id who confirmed this flag
+    confirmed_at        TEXT,                               -- timestamp of confirmation
+    is_confirmed        INTEGER DEFAULT 0,                  -- 1 if confirmed by a reviewer
     created_at          TEXT    DEFAULT (datetime('now')),
     FOREIGN KEY (session_id) REFERENCES sessions(session_id)
 );
@@ -59,7 +65,7 @@ CREATE TABLE IF NOT EXISTS review_log (
     log_id              INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id          TEXT,
     flag_id             INTEGER,
-    action              TEXT,                               -- 'CONFIRM', 'FALSE_POSITIVE', 'ESCALATE', 'CLEAR', 'MANUAL_FLAG'
+    action              TEXT,                               -- 'CONFIRM', 'FALSE_POSITIVE', 'CLEAR', 'SUBMIT', 'MANUAL_FLAG', 'FLAG_DISMISSED'
     reviewer_id         TEXT,
     note                TEXT,
     actioned_at         TEXT    DEFAULT (datetime('now')),

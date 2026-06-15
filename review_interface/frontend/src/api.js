@@ -79,6 +79,32 @@ export function saveSessionNote(sessionId, note, reviewerId) {
   });
 }
 
+// ── Workflow actions ───────────────────────────────────────────────────────
+
+export function confirmFlag(flagId, reviewerId) {
+  return request(`/flags/${flagId}/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer_id: reviewerId }),
+  });
+}
+
+export function submitSession(sessionId, reviewerId, note) {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer_id: reviewerId, note: note || null }),
+  });
+}
+
+export function markNeedsFinalReview(sessionId, reviewerId) {
+  return request(`/sessions/${encodeURIComponent(sessionId)}/needs-final-review`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reviewer_id: reviewerId }),
+  });
+}
+
 // ── Export ─────────────────────────────────────────────────────────────────
 
 export function exportCsv() {

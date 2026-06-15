@@ -129,23 +129,27 @@ export default function SessionQueue({ reviewerName, reviewerRole, onSelectSessi
   const clearFilters = () => { setVerdictFilter(''); setStatusFilter(''); };
   const hasFilters   = verdictFilter || statusFilter;
 
-  const severe       = stats?.count_severe       ?? 0;
-  const flagged      = stats?.count_flagged      ?? 0;
-  const clean        = stats?.count_clean        ?? 0;
-  const unprocessed  = stats?.count_unprocessed  ?? 0;
-  const locked       = stats?.count_locked       ?? 0;
-  const total        = stats?.total_sessions     ?? 0;
-  const pending      = stats?.total_pending      ?? 0;
-  const reviewed     = total - pending;
+  const severe           = stats?.count_severe              ?? 0;
+  const flagged          = stats?.count_flagged             ?? 0;
+  const clean            = stats?.count_clean               ?? 0;
+  const unprocessed      = stats?.count_unprocessed         ?? 0;
+  const locked           = stats?.count_locked              ?? 0;
+  const submitted        = stats?.count_submitted           ?? 0;
+  const needsFinalReview = stats?.count_needs_final_review  ?? 0;
+  const total            = stats?.total_sessions            ?? 0;
+  const pending          = stats?.total_pending             ?? 0;
+  const reviewed         = total - pending;
 
   const statCells = [
-    { label: 'Severe',         value: severe,       color: C.severeText  },
-    { label: 'Flagged',        value: flagged,       color: C.flaggedText },
-    { label: 'Clean',          value: clean,         color: C.cleanText   },
-    { label: 'Unprocessed',    value: unprocessed,   color: '#444441'     },
-    { label: 'Locked',         value: locked,        color: '#444441'     },
-    { label: 'Total sessions', value: total,         color: C.textPrimary },
-    { label: 'Pending review', value: pending,       color: C.accent      },
+    { label: 'Severe',         value: severe,           color: C.severeText  },
+    { label: 'Flagged',        value: flagged,           color: C.flaggedText },
+    { label: 'Clean',          value: clean,             color: C.cleanText   },
+    { label: 'Unprocessed',    value: unprocessed,       color: '#444441'     },
+    { label: 'Locked',         value: locked,            color: '#444441'     },
+    { label: 'Submitted',      value: submitted,         color: '#185FA5'     },
+    { label: 'Needs Review',   value: needsFinalReview,  color: '#854F0B'     },
+    { label: 'Total sessions', value: total,             color: C.textPrimary },
+    { label: 'Pending review', value: pending,           color: C.accent      },
   ];
 
   const handleSortClick = (colLabel) => {
@@ -332,10 +336,11 @@ export default function SessionQueue({ reviewerName, reviewerRole, onSelectSessi
           <select style={selectSt} value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
             <option value="">All Statuses</option>
             <option value="PENDING">PENDING</option>
+            <option value="SUBMITTED_FOR_REVIEW">SUBMITTED FOR REVIEW</option>
+            <option value="NEEDS_FINAL_REVIEW">NEEDS FINAL REVIEW</option>
             <option value="REVIEWED">REVIEWED</option>
             <option value="CONFIRMED">CONFIRMED</option>
             <option value="OVERRIDDEN">OVERRIDDEN</option>
-            <option value="NEEDS_FINAL_REVIEW">NEEDS FINAL REVIEW</option>
             <option value="LOCKED">LOCKED</option>
           </select>
 
@@ -612,13 +617,18 @@ export default function SessionQueue({ reviewerName, reviewerRole, onSelectSessi
                   const isLast     = idx === displayedSessions.length - 1;
                   const isHovered  = hoveredRow === s.session_id;
                   const isClearing = clearingSession === s.session_id;
+                  const isNFR      = s.review_status === 'NEEDS_FINAL_REVIEW';
                   return (
                     <tr
                       key={s.session_id}
                       className="session-row"
                       onMouseEnter={() => setHoveredRow(s.session_id)}
                       onMouseLeave={() => setHoveredRow(null)}
-                      style={{ background: isHovered ? C.bgMuted : C.bgSurface, transition: 'background 150ms' }}
+                      style={{
+                        background: isHovered ? C.bgMuted : C.bgSurface,
+                        transition: 'background 150ms',
+                        ...(reviewerRole === 'L2' && isNFR ? { borderLeft: '3px solid #FAC775' } : {}),
+                      }}
                     >
                       <td style={tdMono(isLast)}>
                         {s.review_status === 'LOCKED' && <span style={{ marginRight: 4 }}>🔒</span>}
@@ -707,14 +717,25 @@ export default function SessionQueue({ reviewerName, reviewerRole, onSelectSessi
                       <td style={td(isLast)}><StatusBadge status={s.review_status} /></td>
 
                       <td style={td(isLast)}>
-                        {s.reviewer_id && s.review_status !== 'PENDING'
-                          ? <span style={{ fontSize: 12, color: '#1C1C1A' }}>{truncate(s.reviewer_id, 15)}</span>
-                          : <span style={{ color: '#9B9890' }}>—</span>}
+                        {['SUBMITTED_FOR_REVIEW', 'NEEDS_FINAL_REVIEW', 'LOCKED'].includes(s.review_status) && s.submitted_by ? (
+                          <div>
+                            <span style={{ fontSize: 12, color: '#1C1C1A' }}>{truncate(s.submitted_by, 15)}</span>
+                            {s.review_status === 'LOCKED' && s.locked_by && (
+                              <div style={{ fontSize: 10, fontFamily: MONO, color: '#9B9890', marginTop: 2 }}>
+                                Locked by {s.locked_by}
+                              </div>
+                            )}
+                          </div>
+                        ) : s.reviewer_id && s.review_status !== 'PENDING' ? (
+                          <span style={{ fontSize: 12, color: '#1C1C1A' }}>{truncate(s.reviewer_id, 15)}</span>
+                        ) : (
+                          <span style={{ color: '#9B9890' }}>—</span>
+                        )}
                       </td>
 
                       <td style={td(isLast)}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          {['REVIEWED', 'CONFIRMED', 'OVERRIDDEN', 'NEEDS_FINAL_REVIEW'].includes(s.review_status) && (
+                          {reviewerRole === 'L2' && ['SUBMITTED_FOR_REVIEW', 'NEEDS_FINAL_REVIEW', 'REVIEWED', 'CONFIRMED', 'OVERRIDDEN'].includes(s.review_status) && (
                             <button
                               onClick={() => handleLockSession(s.session_id)}
                               style={{
@@ -723,7 +744,7 @@ export default function SessionQueue({ reviewerName, reviewerRole, onSelectSessi
                                 color: C.accent, cursor: 'pointer', whiteSpace: 'nowrap',
                               }}
                             >
-                              Lock
+                              Lock 🔒
                             </button>
                           )}
                           <button
@@ -737,7 +758,7 @@ export default function SessionQueue({ reviewerName, reviewerRole, onSelectSessi
                               borderRadius: 4, transition: 'background 150ms', whiteSpace: 'nowrap',
                             }}
                           >
-                            {s.review_status === 'LOCKED' ? 'View' : 'Review →'}
+                            {s.review_status === 'LOCKED' ? 'View 🔒' : 'Review →'}
                           </button>
                         </div>
                       </td>
